@@ -1,0 +1,19 @@
+ @tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ====== BASE DO SISTEMA ====== */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Ubuntu, "Helvetica Neue", sans-serif;
+  background-color: #ffffff; /* fundo do sistema */
+  color: #0f172a;/* texto claro */
+}
+
+
+ 
