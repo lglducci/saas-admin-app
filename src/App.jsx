@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import Assinaturas from "./pages/Assinaturas";
 import Cobrancas from "./pages/Cobrancas";
 import Pagamentos from "./pages/Pagamentos";
+import   ModelosTemp from "./pages/ModelosTemp";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="/assinaturas" element={<Assinaturas />} />
           <Route path="/cobrancas" element={<Cobrancas />} />
           <Route path="/pagamentos" element={<Pagamentos />} />
+          <Route path="/modelos" element={<ModelosTemp />} />
         </Routes>
       </main>
     </div>
