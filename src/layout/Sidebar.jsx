@@ -21,6 +21,8 @@ export default function Sidebar() {
         <NavLink to="/assinaturas" style={linkStyle}>Assinaturas</NavLink>
         <NavLink to="/cobrancas" style={linkStyle}>Cobranças</NavLink>
         <NavLink to="/pagamentos" style={linkStyle}>Pagamentos</NavLink>
+        <NavLink to="/modelos" style={linkStyle}>Modelos</NavLink>
+   
       </nav>
     </aside>
   );
