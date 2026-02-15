@@ -1,8 +1,8 @@
 // globals.js
 
 // Domínio base do webhook
-//export const DOMINIO =    'https://webhook.lglducci.com.br/webhook/';
-export const DOMINIO = 'https://webhook-homolog.lglducci.com.br/webhook/'     
+export const DOMINIO =    'https://webhook.lglducci.com.br/webhook/';
+//export const DOMINIO = 'https://webhook-homolog.lglducci.com.br/webhook/'     
 /**
  * Função helper para gerar URLs completas de webhooks
  * @param {string} path - Caminho do webhook (ex: 'consultasaldo')
