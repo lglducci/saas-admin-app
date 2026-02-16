@@ -36,6 +36,7 @@ export default function ModelosTemp() {
       <th>Conta Débito</th>
       <th>Conta Crédito</th> 
        <th>Natureza</th> 
+          <th>Forma</th> 
       <th>Ações</th>
     </tr>
   </thead>
@@ -52,7 +53,7 @@ export default function ModelosTemp() {
         <td>{d.conta_credito_codigo}</td>
 
         <td>{d.natureza_fluxo}</td>
-      
+         <td>{d.forma_operacao}</td>
         <td>
           <button onClick={() => setEditando(d)}>
             Editar
@@ -75,3 +76,4 @@ export default function ModelosTemp() {
     </div>
   );
 }
+
