@@ -7,6 +7,7 @@ import Cobrancas from "./pages/Cobrancas";
 import Pagamentos from "./pages/Pagamentos";
 import   ModelosTemp from "./pages/ModelosTemp";
 import   CategoriaModelos from "./pages/CategoriaModelos";
+import  ControlaTrial from    "./pages/ControlaTrial";
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/pagamentos" element={<Pagamentos />} />
           <Route path="/modelos" element={<ModelosTemp />} />
           <Route path="/categoria-modelo" element={<CategoriaModelos />} />
+          <Route path="/controla-trial" element={<ControlaTrial />} />
         </Routes>
       </main>
     </div>
