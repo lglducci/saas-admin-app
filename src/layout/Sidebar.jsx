@@ -23,6 +23,7 @@ export default function Sidebar() {
         <NavLink to="/pagamentos" style={linkStyle}>Pagamentos</NavLink>
         <NavLink to="/modelos" style={linkStyle}>Modelos</NavLink>
          <NavLink to="/categoria-modelo"  style={linkStyle}>CategoriaModelos  </NavLink>
+           <NavLink to="/controla-trial"  style={linkStyle}>Controla Trial  </NavLink>
       </nav>
     </aside>
   );
