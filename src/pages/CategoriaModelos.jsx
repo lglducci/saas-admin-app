@@ -30,40 +30,37 @@ export default function CategoriaModelos() {
       
   <thead>
     <tr>
-         <th>id</th>
-      <th>Código</th>
-      <th>Descrição</th>
-      <th>Classificação</th>
+         <th>Categoria id</th>
+      <th>Empresa</th>
+      <th>Categoria</th> 
       <th>Tipo</th>
-      <th>Conta Débito</th>
-      <th>Conta Crédito</th> 
-       <th>Natureza</th> 
-      <th>Ações</th>
+       <th>Classificação</th>
+      <th>modelo_id</th>
+      <th>Tipo Operacao</th> 
+       <th>Vinculo</th> 
+    
     </tr>
   </thead>               
 
   <tbody>
     {dados.map((d) => (
-      <tr key={d.id}>
-          <td>{d.id}</td>
-        <td>{d.codigo_evento}</td>
-        <td>{d.descricao}</td>
+      <tr key={d.categoria_id}>
+         <td>{d.categoria_id}</td>
+          <td>{d.empresa_id}</td>
+        <td>{d.categoria}</td>
+        <td>{d.tipo}</td>
         <td>{d.classificacao}</td>
-        <td>{d.tipo_evento}</td>
-        <td>{d.conta_debito_codigo}</td>
-        <td>{d.conta_credito_codigo}</td>
-
-        <td>{d.natureza_fluxo}</td>
+        <td>{d.modelo_id}</td>
+        <td>{d.forma_operacao}</td>
+        <td>{d.vinculo_ativo }</td> 
       
-        <td>
-          <button onClick={() => setEditando(d)}>
-            Editar
-          </button>
-        </td>
+         
       </tr>
     ))}
   </tbody>
 </table>
+
+ 
 
       {editando && (
         <CadastroTemplate
