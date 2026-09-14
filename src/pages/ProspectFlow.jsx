@@ -1,4 +1,4 @@
- import { useCallback, useEffect, useMemo, useState } from "react";
+    import { useCallback, useEffect, useMemo, useState } from "react";
  import { buildWebhookUrl } from "../config/globals";
  
  /*
@@ -23,14 +23,15 @@
  */
  
  const filtros = [
-   { id: "HOJE", nome: "Hoje" },
-     { id: "NOVO", nome: "Novos" },
+   { id: "HOJE", nome: "Para hoje" },
+     { id: "LIGAR", nome: "Ligar" },
    { id: "TODOS", nome: "Todos" },
-   { id: "AGUARDANDO_MINHA_RESPOSTA", nome: " Aguardando minha resposta" },
+   { id: "AGUARDANDO_MINHA_RESPOSTA", nome: " Minha resposta" },
    { id: "AGUARDANDO_CLIENTE", nome: "Aguardando cliente" },
    { id: "CONVERTIDO", nome: "Convertidos" },
    { id: "ENCERRADO", nome: "Encerrados" },
    { id: "BLOQUEADO", nome: "Não contatar" },
+  { id: "NAO_LIDO", nome: "Não lidos" }
  ];
 
  
@@ -50,14 +51,39 @@
    observacoes: "",
  };
  
- const mensagemVazia = {
+const mensagemVazia = {
    id: null,
    ordem: 1,
    nome: "",
    dias_apos_anterior: 0,
    texto: "",
    ativo: true,
- };
+};
+
+const tarefaVazia = {
+  lead: null,
+  tipo: "COBRAR_RESPOSTA",
+  descricao: "",
+  agendada_para: "",
+};
+
+const filtrosAgenda = [
+  { id: "ATRASADAS", nome: "Atrasadas", resumo: "atrasadas" },
+  { id: "HOJE", nome: "Hoje", resumo: "hoje" },
+  { id: "PROXIMOS_7", nome: "Próximos 7 dias", resumo: "proximos_7" },
+  { id: "PROXIMOS_30", nome: "Próximos 30 dias", resumo: "proximos_30" },
+  { id: "PENDENTES", nome: "Pendentes", resumo: "pendentes" },
+  { id: "CONCLUIDAS", nome: "Concluídas", resumo: "concluidas" },
+];
+
+const nomesTarefa = {
+  LIGAR: "Ligar",
+  ENVIAR_MENSAGEM: "Enviar mensagem",
+  ENVIAR_PROPOSTA: "Enviar proposta",
+  COBRAR_RESPOSTA: "Cobrar resposta",
+  VISITAR: "Visitar",
+  OUTRO: "Outra ação",
+};
  
  // O SaaS Admin é uma aplicação administrativa e não mantém empresa_id no
  // localStorage. Para o MVP, a empresa do ProspectFlow pode ser configurada no
@@ -112,14 +138,14 @@ const ATUALIZACAO_AUTOMATICA_MS = 15_000;
    return ano && mes && dia ? `${dia}/${mes}/${ano}` : valor;
  }
  
- function dataHoraBR(valor) {
+function dataHoraBR(valor) {
    if (!valor) return "-";
    return new Date(valor).toLocaleString("pt-BR");
  }
  
  function statusVisual(status) {
    const mapa = {
-     NOVO: ["Novo", "bg-sky-100 text-sky-700"],
+     NOVO: ["Sem contato", "bg-sky-100 text-sky-700"],
      EM_CADENCIA: ["Aguardando resposta", "bg-amber-100 text-amber-700"],
      AGUARDANDO_MINHA_RESPOSTA: [
        "Aguardando você",
@@ -201,9 +227,23 @@ const ATUALIZACAO_AUTOMATICA_MS = 15_000;
  
  export default function ProspectFlow() {
    const empresaId = EMPRESA_PROSPECTFLOW_ID;
+
+   const [temaEscuro, setTemaEscuro] = useState(() => {
+     try {
+       const temaSalvo = window.localStorage.getItem("prospectflow-tema");
+
+       if (temaSalvo === "dark") return true;
+       if (temaSalvo === "light") return false;
+
+       return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
+     } catch {
+       return false;
+     }
+   });
  
    const [aba, setAba] = useState("LEADS");
    const [filtro, setFiltro] = useState("HOJE");
+   const [etapaFiltro, setEtapaFiltro] = useState("TODAS");
    const [busca, setBusca] = useState("");
    const [leads, setLeads] = useState([]);
    const [resumo, setResumo] = useState({});
@@ -228,6 +268,25 @@ const ATUALIZACAO_AUTOMATICA_MS = 15_000;
    const [modalEnvio, setModalEnvio] = useState(null);
    const [modalAcao, setModalAcao] = useState(null);
    const [textoAcao, setTextoAcao] = useState("");
+   const [tarefasPendentes, setTarefasPendentes] = useState([]);
+   const [tarefasAgenda, setTarefasAgenda] = useState([]);
+   const [resumoAgenda, setResumoAgenda] = useState({});
+   const [filtroAgenda, setFiltroAgenda] = useState("HOJE");
+   const [buscaAgenda, setBuscaAgenda] = useState("");
+   const [modalTarefa, setModalTarefa] = useState(false);
+   const [formTarefa, setFormTarefa] = useState(tarefaVazia);
+   const [modalAdiamento, setModalAdiamento] = useState(null);
+
+   useEffect(() => {
+     try {
+       window.localStorage.setItem(
+         "prospectflow-tema",
+         temaEscuro ? "dark" : "light",
+       );
+     } catch {
+       // O tema continua funcionando mesmo se o navegador bloquear o storage.
+     }
+   }, [temaEscuro]);
  
    const chamarApi = useCallback(
      async (acao, payload = {}) => {
@@ -341,14 +400,22 @@ const ATUALIZACAO_AUTOMATICA_MS = 15_000;
     
  
       const filtroApi =
-  ["NOVO", "AGUARDANDO_CLIENTE"].includes(filtro)
+        ["LIGAR", "AGUARDANDO_CLIENTE"].includes(filtro)
     ? "TODOS"
     : filtro;
 
-const retorno = await chamarApi("LISTAR_LEADS", {
-  filtro: filtroApi,
-  busca: busca.trim(),
-});
+const [retorno, retornoTarefas] = await Promise.all([
+  chamarApi("LISTAR_LEADS", {
+    filtro: filtroApi,
+    etapa_comercial: etapaFiltro,
+    busca: busca.trim(),
+  }),
+  chamarApi("LISTAR_TAREFAS", { filtro: "PENDENTES" }),
+]);
+
+setTarefasPendentes(
+  Array.isArray(retornoTarefas?.dados) ? retornoTarefas.dados : [],
+);
 
 const leadsRecebidos = Array.isArray(retorno?.dados)
   ? retorno.dados
@@ -356,7 +423,13 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
 
 const novosLeads =
   filtro === "NOVO"
-    ? leadsRecebidos.filter((lead) => lead.status === "NOVO")
+    ? leadsRecebidos.filter((lead) =>  lead.etapa_comercial === "NOVO" &&
+        lead.canal_preferido !== "TELEFONE")
+
+    : filtro === "LIGAR"
+  ? leadsRecebidos.filter(
+      (lead) => lead.canal_preferido === "TELEFONE"
+    )
     : filtro === "AGUARDANDO_CLIENTE"
       ? leadsRecebidos.filter((lead) =>
           ["EM_CADENCIA", "AGUARDANDO_CLIENTE"].includes(lead.status),
@@ -382,7 +455,7 @@ const novosLeads =
      } finally {
        if (!silencioso) setCarregando(false);
      }
-   }, [busca, chamarApi, filtro]);
+   }, [busca, chamarApi, etapaFiltro, filtro]);
  
    const carregarMensagens = useCallback(async () => {
      try {
@@ -397,6 +470,26 @@ const novosLeads =
        setCarregando(false);
      }
    }, [chamarApi]);
+
+   const carregarTarefas = useCallback(async ({ silencioso = false } = {}) => {
+     try {
+       if (!silencioso) setCarregando(true);
+       setErro("");
+       const retorno = await chamarApi("LISTAR_TAREFAS", {
+         filtro: filtroAgenda,
+         busca: buscaAgenda.trim(),
+       });
+       setTarefasAgenda(Array.isArray(retorno?.dados) ? retorno.dados : []);
+       setResumoAgenda(retorno?.resumo || {});
+     } catch (e) {
+       if (!silencioso) {
+         setErro(e.message || "Erro ao consultar a agenda.");
+         setTarefasAgenda([]);
+       }
+     } finally {
+       if (!silencioso) setCarregando(false);
+     }
+   }, [buscaAgenda, chamarApi, filtroAgenda]);
  
    useEffect(() => {
      if (aba === "LEADS") {
@@ -423,9 +516,22 @@ const novosLeads =
        };
      }
  
+     if (aba === "AGENDA") {
+       const primeiraCarga = window.setTimeout(() => carregarTarefas(), 100);
+       const intervalo = window.setInterval(
+         () => carregarTarefas({ silencioso: true }),
+         ATUALIZACAO_AUTOMATICA_MS,
+       );
+
+       return () => {
+         window.clearTimeout(primeiraCarga);
+         window.clearInterval(intervalo);
+       };
+     }
+
      carregarMensagens();
      return undefined;
-   }, [aba, carregarLeads, carregarMensagens]);
+   }, [aba, carregarLeads, carregarMensagens, carregarTarefas]);
 
    useEffect(() => {
      if (!modalHistorico || !leadHistorico?.id) return undefined;
@@ -468,6 +574,7 @@ const novosLeads =
        CONVERTIDO: Number(resumo.convertidos || 0),
        ENCERRADO: Number(resumo.encerrados || 0),
        BLOQUEADO: Number(resumo.bloqueados || 0),
+       NAO_LIDO: Number(resumo.nao_lidos || 0),
      }),
      [resumo],
    );
@@ -643,6 +750,19 @@ const novosLeads =
   } finally {
     setExecutando(null);
   }
+}
+
+function paraDataHoraLocal(valor) {
+  const data = valor ? new Date(valor) : new Date();
+  const deslocamento = data.getTimezoneOffset() * 60_000;
+  return new Date(data.getTime() - deslocamento).toISOString().slice(0, 16);
+}
+
+function agendamentoInicial() {
+  const data = new Date();
+  data.setDate(data.getDate() + 1);
+  data.setHours(9, 0, 0, 0);
+  return paraDataHoraLocal(data);
 }
 
 
@@ -914,9 +1034,185 @@ const novosLeads =
        setExecutando(null);
      }
    }
+
+
+   async function alterarEtapaComercial(lead, novaEtapa) {
+  try {
+    setExecutando(`ETAPA-${lead.id}`);
+
+    await chamarApi("ALTERAR_ETAPA_COMERCIAL", {
+      lead_id: lead.id,
+      etapa_comercial: novaEtapa,
+    });
+
+    setLeads((atuais) =>
+      atuais.map((item) =>
+        String(item.id) === String(lead.id)
+          ? {
+              ...item,
+              etapa_comercial: novaEtapa,
+            }
+          : item,
+      ),
+    );
+  } catch (erro) {
+    alert(
+      erro?.message ||
+      "Erro ao alterar a etapa comercial.",
+    );
+  } finally {
+    setExecutando(null);
+  }
+}
+
+   function abrirAgendamento(lead) {
+     setFormTarefa({
+       ...tarefaVazia,
+       lead,
+       agendada_para: agendamentoInicial(),
+     });
+     setModalTarefa(true);
+   }
+
+   async function salvarTarefa() {
+     if (!formTarefa.lead?.id || !formTarefa.agendada_para) {
+       alert("Informe o lead e a data da ação.");
+       return;
+     }
+
+     try {
+       setExecutando("SALVAR_TAREFA");
+       await chamarApi("SALVAR_TAREFA", {
+         lead_id: formTarefa.lead.id,
+         tipo: formTarefa.tipo,
+         descricao: formTarefa.descricao.trim(),
+         agendada_para: new Date(formTarefa.agendada_para).toISOString(),
+       });
+       setModalTarefa(false);
+       setFormTarefa(tarefaVazia);
+       await carregarLeads({ silencioso: true });
+       if (aba === "AGENDA") await carregarTarefas({ silencioso: true });
+     } catch (e) {
+       alert(e.message || "Erro ao agendar a ação.");
+     } finally {
+       setExecutando(null);
+     }
+   }
+
+   async function concluirTarefa(tarefa) {
+     try {
+       setExecutando(`CONCLUIR_TAREFA-${tarefa.id}`);
+       await chamarApi("CONCLUIR_TAREFA", { tarefa_id: tarefa.id });
+       setTarefasPendentes((atuais) =>
+         atuais.filter((item) => String(item.id) !== String(tarefa.id)),
+       );
+       await carregarTarefas({ silencioso: true });
+     } catch (e) {
+       alert(e.message || "Erro ao concluir a ação.");
+     } finally {
+       setExecutando(null);
+     }
+   }
+
+   async function adiarTarefa(tarefa, dias) {
+     const base = Math.max(Date.now(), new Date(tarefa.agendada_para).getTime());
+     const novaData = new Date(base);
+     novaData.setDate(novaData.getDate() + dias);
+
+     try {
+       setExecutando(`ADIAR_TAREFA-${tarefa.id}`);
+       await chamarApi("ADIAR_TAREFA", {
+         tarefa_id: tarefa.id,
+         agendada_para: novaData.toISOString(),
+       });
+       await carregarLeads({ silencioso: true });
+       await carregarTarefas({ silencioso: true });
+     } catch (e) {
+       alert(e.message || "Erro ao adiar a ação.");
+     } finally {
+       setExecutando(null);
+     }
+   }
+
+   function abrirAdiamentoPersonalizado(tarefa) {
+     setModalAdiamento({
+       tarefa,
+       agendada_para: paraDataHoraLocal(tarefa.agendada_para),
+     });
+   }
+
+   async function confirmarAdiamentoPersonalizado() {
+     if (!modalAdiamento?.agendada_para) return;
+
+     try {
+       setExecutando(`ADIAR_TAREFA-${modalAdiamento.tarefa.id}`);
+       await chamarApi("ADIAR_TAREFA", {
+         tarefa_id: modalAdiamento.tarefa.id,
+         agendada_para: new Date(modalAdiamento.agendada_para).toISOString(),
+       });
+       setModalAdiamento(null);
+       await carregarLeads({ silencioso: true });
+       await carregarTarefas({ silencioso: true });
+     } catch (e) {
+       alert(e.message || "Erro ao alterar a data.");
+     } finally {
+       setExecutando(null);
+     }
+   }
+
+    async function selecionarLead(lead) {
+  setLeadSelecionadoId(lead.id);
+
+  // Limpa qualquer erro antigo mostrado na UI.
+  setErro("");
+
+  const naoEstaLido =
+    lead.lido === false ||
+    lead.lido === "false";
+
+  if (!naoEstaLido) {
+    return;
+  }
+
+  try {
+    await chamarApi("MARCAR_LIDO", {
+      lead_id: lead.id,
+    });
+
+    setLeads((atuais) =>
+      atuais.map((item) =>
+        String(item.id) === String(lead.id)
+          ? { ...item, lido: true }
+          : item,
+      ),
+    );
+
+    setResumo((atual) => ({
+      ...atual,
+      nao_lidos: Math.max(
+        0,
+        Number(atual.nao_lidos || 0) - 1,
+      ),
+    }));
+
+    // Garante que nenhum erro anterior permaneça.
+    setErro("");
+  } catch (erro) {
+    console.error("Erro ao marcar lead como lido:", erro);
+
+    setErro(
+      erro?.message ||
+      "Não foi possível marcar o lead como lido.",
+    );
+  }
+}
+ 
  
    return (
-     <div id="prospectflow-page" className="pf-page">
+    <div
+      id="prospectflow-page"
+      className={`pf-page ${temaEscuro ? "is-dark" : "is-light"}`}
+    >
        <div className="pf-shell">
          <header className="pf-header">
            <div className="absolute -right-16 -top-24 h-60 w-60 rounded-full bg-sky-400/10" />
@@ -941,6 +1237,17 @@ const novosLeads =
              </div>
  
              <div className="pf-header-actions">
+
+               <button
+                 type="button"
+                 onClick={() => setTemaEscuro((atual) => !atual)}
+                 className="pf-theme-button"
+                 aria-pressed={temaEscuro}
+                 title={temaEscuro ? "Usar tema claro" : "Usar tema escuro"}
+               >
+                 <span aria-hidden="true">{temaEscuro ? "☀" : "☾"}</span>
+                 {temaEscuro ? "Claro" : "Escuro"}
+               </button>
 
                 <button
                 type="button"
@@ -992,6 +1299,17 @@ const novosLeads =
                <span>✦</span>
                Mensagens da cadência
              </button>
+             <button
+               type="button"
+               onClick={() => setAba("AGENDA")}
+               className={`pf-tab ${aba === "AGENDA" ? "is-active" : ""}`}
+             >
+               <span>◷</span>
+               Agenda
+               {Number(resumoAgenda.hoje || 0) > 0 && (
+                 <strong className="pf-tab-count">{resumoAgenda.hoje}</strong>
+               )}
+             </button>
            </div>
  
            {erro && <div className="pf-error">{erro}</div>}
@@ -999,25 +1317,48 @@ const novosLeads =
            {aba === "LEADS" ? (
              <>
                <section className="pf-toolbar">
-                 <div className="flex flex-wrap items-center justify-between gap-3">
+                 <div className="pf-toolbar-layout">
+
                    <div className="pf-filter-list">
                      {filtros.map((item) => (
-                       <button
-                         key={item.id}
-                         type="button"
-                         onClick={() => setFiltro(item.id)}
-                       className={`pf-filter-button ${filtro === item.id ? "is-active" : ""}`}
+                        <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setFiltro(item.id)}
+                        className={`pf-filter-button ${
+                          item.id === "NAO_LIDO" ? "is-unread" : ""
+                        } ${filtro === item.id ? "is-active" : ""}`}
                       >
-                         <span>{item.nome}</span>
-                         <strong className="pf-filter-count">
-                           {quantidadesFiltro[item.id] ||
-                             (filtro === item.id ? leads.length : 0)}
-                         </strong>
+                        <span>{item.nome}</span>
+
+                        <strong className="pf-filter-count">
+                          {quantidadesFiltro[item.id] ??
+                            (filtro === item.id ? leads.length : 0)}
+                        </strong>
                       </button>
                      ))}
-                   </div>
+                
  
                    <div className="pf-search-row">
+                     <label className="pf-commercial-stage-filter">
+                       <span>Etapa comercial</span>
+                       <select
+                         value={etapaFiltro}
+                         onChange={(event) => setEtapaFiltro(event.target.value)}
+                         aria-label="Filtrar por etapa comercial"
+                       >
+                         <option value="TODAS">Todas as etapas</option>
+                         <option value="NOVO">Novo</option>
+                         <option value="CONTATADO">Contatado</option>
+                         <option value="QUALIFICADO">Qualificado</option>
+                         <option value="REUNIAO">Reunião</option>
+                         <option value="PROPOSTA">Proposta</option>
+                         <option value="NEGOCIACAO">Negociação</option>
+                         <option value="GANHO">Ganho</option>
+                         <option value="PERDIDO">Perdido</option>
+                       </select>
+                     </label>
+
                      <div className="relative flex-1">
                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                          ⌕
@@ -1039,6 +1380,7 @@ const novosLeads =
                      </button>
                    </div>
                  </div>
+                     </div>
                </section>
  
                {carregando ? (
@@ -1126,7 +1468,7 @@ const novosLeads =
                            <button
                              key={lead.id}
                              type="button"
-                             onClick={() => setLeadSelecionadoId(lead.id)}
+                             onClick={() => selecionarLead(lead)}
                              onDoubleClick={() => abrirEditarLead(lead)}
                              className={`pf-prospect-item ${
                                ativo ? "is-active" : ""
@@ -1192,6 +1534,9 @@ const novosLeads =
                        ["NOVO", "EM_CADENCIA"].includes(lead.status) &&
                        Boolean(lead.proxima_mensagem_id);
                      const canal = canalVisual(lead.canal_preferido);
+                     const proximaTarefa = tarefasPendentes.find(
+                       (tarefa) => String(tarefa.lead_id) === String(lead.id),
+                     );
  
                      return (
                        <article
@@ -1225,6 +1570,27 @@ const novosLeads =
                                <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600">
                                  {lead.tipo_lead}
                                </span>
+
+                               <select
+                                value={lead.etapa_comercial || "NOVO"}
+                                onChange={(event) =>
+                                  alterarEtapaComercial(lead, event.target.value)
+                                }
+                                disabled={executando === `ETAPA-${lead.id}`}
+                                className={`pf-stage-select pf-stage-${String(
+                                  lead.etapa_comercial || "NOVO",
+                                ).toLowerCase()}`}
+                                aria-label="Etapa comercial"
+                                title="Alterar etapa comercial"
+                              >
+                                <option value="NOVO">● Novo</option>
+                                <option value="CONTATADO">● Contatado</option>
+                                <option value="QUALIFICADO">● Qualificado</option>
+                                <option value="REUNIAO">● Reunião</option>
+                                <option value="PROPOSTA">● Proposta</option>
+                                <option value="NEGOCIACAO">● Negociação</option>
+                              </select>
+
                              </div>
  
                              <div className="mt-3 text-xs font-semibold text-slate-500">
@@ -1257,6 +1623,34 @@ const novosLeads =
                                  </strong>
                                </div>
                              </div>
+
+                             {proximaTarefa && (
+                               <div className="pf-next-task">
+                                 <div>
+                                   <span>Próxima ação manual</span>
+                                   <strong>
+                                     {nomesTarefa[proximaTarefa.tipo] || proximaTarefa.tipo}
+                                   </strong>
+                                   <small>{dataHoraBR(proximaTarefa.agendada_para)}</small>
+                                 </div>
+                                 <div>
+                                   <button
+                                     type="button"
+                                     onClick={() => concluirTarefa(proximaTarefa)}
+                                     disabled={executando === `CONCLUIR_TAREFA-${proximaTarefa.id}`}
+                                   >
+                                     ✓ Concluir
+                                   </button>
+                                   <button
+                                     type="button"
+                                     onClick={() => adiarTarefa(proximaTarefa, 1)}
+                                     disabled={executando === `ADIAR_TAREFA-${proximaTarefa.id}`}
+                                   >
+                                     Adiar
+                                   </button>
+                                 </div>
+                               </div>
+                             )}
  
                              {bloqueado && (
                                <div className="mt-3 rounded-lg bg-red-100 px-3 py-2 text-xs font-black text-red-700">
@@ -1383,6 +1777,17 @@ const novosLeads =
                                  ★ Virou cliente
                                </button>
                              )}
+
+                             {!bloqueado &&
+                               !["CONVERTIDO", "ENCERRADO"].includes(lead.status) && (
+                                 <button
+                                   type="button"
+                                   onClick={() => abrirAgendamento(lead)}
+                                   className="pf-action-schedule"
+                                 >
+                                   ＋ Agendar ação
+                                 </button>
+                               )}
  
                              {!bloqueado && 
                                !["CONVERTIDO", "ENCERRADO"].includes(
@@ -1424,6 +1829,108 @@ const novosLeads =
                  </section>
                )}
              </>
+           ) : aba === "AGENDA" ? (
+             <section className="pf-agenda-page">
+               <div className="pf-agenda-header">
+                 <div>
+                   <h2>Agenda comercial</h2>
+                   <p>Ações manuais programadas sem alterar a cadência dos leads.</p>
+                 </div>
+                 <button type="button" onClick={() => carregarTarefas()}>
+                   ↻ Atualizar
+                 </button>
+               </div>
+
+               <div className="pf-agenda-toolbar">
+                 <div className="pf-agenda-filters">
+                   {filtrosAgenda.map((item) => (
+                     <button
+                       key={item.id}
+                       type="button"
+                       onClick={() => setFiltroAgenda(item.id)}
+                       className={filtroAgenda === item.id ? "is-active" : ""}
+                     >
+                       {item.nome}
+                       <strong>{Number(resumoAgenda[item.resumo] || 0)}</strong>
+                     </button>
+                   ))}
+                 </div>
+                 <input
+                   type="search"
+                   value={buscaAgenda}
+                   onChange={(event) => setBuscaAgenda(event.target.value)}
+                   placeholder="Buscar lead ou ação..."
+                 />
+               </div>
+
+               {carregando ? (
+                 <div className="pf-loading">Carregando agenda...</div>
+               ) : tarefasAgenda.length === 0 ? (
+                 <div className="pf-agenda-empty">
+                   <span>✓</span>
+                   <strong>Nenhuma ação neste filtro</strong>
+                   <p>Agende a próxima ação diretamente no cadastro de um lead.</p>
+                 </div>
+               ) : (
+                 <div className="pf-task-list">
+                   {tarefasAgenda.map((tarefa) => {
+                     const atrasada =
+                       tarefa.status === "PENDENTE" &&
+                       new Date(tarefa.agendada_para).getTime() < Date.now();
+
+                     return (
+                       <article
+                         key={tarefa.id}
+                         className={`pf-task-card ${atrasada ? "is-overdue" : ""}`}
+                       >
+                         <div className="pf-task-icon">◷</div>
+                         <div className="pf-task-content">
+                           <div className="pf-task-title-row">
+                             <strong>{tarefa.lead_nome}</strong>
+                             <span>{nomesTarefa[tarefa.tipo] || tarefa.tipo}</span>
+                           </div>
+                           <p>{tarefa.descricao || "Sem observação adicional."}</p>
+                           <small>
+                             {atrasada ? "Atrasada · " : ""}
+                             {dataHoraBR(tarefa.agendada_para)}
+                           </small>
+                         </div>
+
+                         {tarefa.status === "PENDENTE" ? (
+                           <div className="pf-task-actions">
+                             <button
+                               type="button"
+                               className="is-complete"
+                               onClick={() => concluirTarefa(tarefa)}
+                               disabled={executando === `CONCLUIR_TAREFA-${tarefa.id}`}
+                             >
+                               ✓ Concluir
+                             </button>
+                             <button type="button" onClick={() => adiarTarefa(tarefa, 1)}>
+                               +1 dia
+                             </button>
+                             <button type="button" onClick={() => adiarTarefa(tarefa, 3)}>
+                               +3 dias
+                             </button>
+                             <button type="button" onClick={() => adiarTarefa(tarefa, 7)}>
+                               +7 dias
+                             </button>
+                             <button
+                               type="button"
+                               onClick={() => abrirAdiamentoPersonalizado(tarefa)}
+                             >
+                               Escolher data
+                             </button>
+                           </div>
+                         ) : (
+                           <span className="pf-task-completed">Concluída</span>
+                         )}
+                       </article>
+                     );
+                   })}
+                 </div>
+               )}
+             </section>
            ) : (
              <section className="pf-messages-page">
                <div className="pf-section-header">
@@ -1504,6 +2011,118 @@ const novosLeads =
          </main>
        </div>
  
+       {modalTarefa && formTarefa.lead && (
+         <div className="pf-modal-overlay">
+           <div className="pf-modal pf-modal-sm">
+             <div className="pf-modal-titlebar pf-task-modal-titlebar">
+               <div>
+                 <h2>Agendar próxima ação</h2>
+                 <p>{formTarefa.lead.empresa_nome || formTarefa.lead.nome}</p>
+               </div>
+               <button type="button" onClick={() => setModalTarefa(false)}>✕</button>
+             </div>
+
+             <div className="pf-modal-body pf-task-form">
+               <label>
+                 <span>O que deve ser feito?</span>
+                 <select
+                   value={formTarefa.tipo}
+                   onChange={(event) =>
+                     setFormTarefa((atual) => ({ ...atual, tipo: event.target.value }))
+                   }
+                 >
+                   <option value="LIGAR">Ligar</option>
+                   <option value="ENVIAR_MENSAGEM">Enviar mensagem</option>
+                   <option value="ENVIAR_PROPOSTA">Enviar proposta</option>
+                   <option value="COBRAR_RESPOSTA">Cobrar resposta</option>
+                   <option value="VISITAR">Visitar</option>
+                   <option value="OUTRO">Outra ação</option>
+                 </select>
+               </label>
+
+               <label>
+                 <span>Quando?</span>
+                 <input
+                   type="datetime-local"
+                   value={formTarefa.agendada_para}
+                   onChange={(event) =>
+                     setFormTarefa((atual) => ({
+                       ...atual,
+                       agendada_para: event.target.value,
+                     }))
+                   }
+                 />
+               </label>
+
+               <label>
+                 <span>Observação</span>
+                 <textarea
+                   rows={3}
+                   value={formTarefa.descricao}
+                   onChange={(event) =>
+                     setFormTarefa((atual) => ({
+                       ...atual,
+                       descricao: event.target.value,
+                     }))
+                   }
+                   placeholder="Ex.: falar com o responsável financeiro"
+                 />
+               </label>
+             </div>
+
+             <div className="pf-modal-footer">
+               <button type="button" onClick={() => setModalTarefa(false)}>
+                 Cancelar
+               </button>
+               <button
+                 type="button"
+                 onClick={salvarTarefa}
+                 disabled={executando === "SALVAR_TAREFA"}
+               >
+                 {executando === "SALVAR_TAREFA" ? "Salvando..." : "Agendar ação"}
+               </button>
+             </div>
+           </div>
+         </div>
+       )}
+
+       {modalAdiamento && (
+         <div className="pf-modal-overlay">
+           <div className="pf-modal pf-modal-sm">
+             <div className="pf-modal-titlebar pf-task-modal-titlebar">
+               <div>
+                 <h2>Escolher nova data</h2>
+                 <p>{modalAdiamento.tarefa.lead_nome}</p>
+               </div>
+               <button type="button" onClick={() => setModalAdiamento(null)}>✕</button>
+             </div>
+             <div className="pf-modal-body pf-task-form">
+               <label>
+                 <span>Nova data e horário</span>
+                 <input
+                   type="datetime-local"
+                   value={modalAdiamento.agendada_para}
+                   onChange={(event) =>
+                     setModalAdiamento((atual) => ({
+                       ...atual,
+                       agendada_para: event.target.value,
+                     }))
+                   }
+                 />
+               </label>
+             </div>
+             <div className="pf-modal-footer">
+               <button type="button" onClick={() => setModalAdiamento(null)}>
+                 Cancelar
+               </button>
+               <button type="button" onClick={confirmarAdiamentoPersonalizado}>
+                 Salvar nova data
+               </button>
+             </div>
+           </div>
+         </div>
+       )}
+
        {modalEnvio && (
          <div className="pf-modal-overlay">
            <div className="pf-modal pf-modal-sm">
@@ -2271,18 +2890,138 @@ const novosLeads =
            box-shadow: 0 2px 6px rgba(15,23,42,.07);
          }
          .pf-toolbar > div { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-         .pf-filter-list { display: flex; flex-wrap: wrap; gap: 5px; }
-         .pf-filter-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; padding: 7px 9px; background: rgba(255,255,255,.09); color: #e8eef6; font-size: 11px; font-weight: 800; }
-         .pf-filter-button:hover { background: rgba(255,255,255,.16); }
-         .pf-filter-button.is-active { border-color: #bfdbfe; background: #fff; color: #1e4976; }
-         .pf-filter-count { display: inline-flex; min-width: 19px; height: 19px; align-items: center; justify-content: center; border-radius: 999px; padding: 0 6px; background: rgba(255,255,255,.16); color: #fff; font-size: 9px; line-height: 1; font-weight: 900; }
-         .pf-filter-button.is-active .pf-filter-count { background: #dbeafe; color: #1d4ed8; }
-         .pf-search-row { display: flex; width: min(530px, 48%); align-items: center; gap: 8px; }
+         .pf-toolbar > .pf-toolbar-layout { display: grid; grid-template-columns: minmax(0,1fr); gap: 9px; }
+          .pf-filter-list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.pf-filter-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 27px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 7px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #f1f5f9;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: 0.15s ease;
+}
+
+.pf-filter-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.pf-filter-button.is-active {
+  border-color: #bfdbfe;
+  background: #ffffff;
+  color: #1e4976;
+}
+
+.pf-filter-count {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0 4px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  font-size: 8px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.pf-filter-button.is-active .pf-filter-count {
+   border-color: #34d399;
+    background: #25d366;
+  color: #1d4ed8;
+}
+
+/* Botão Não lidos: verde semelhante ao WhatsApp */
+.pf-filter-button.is-unread {
+  border-color: #34d399;
+  background: #25d366;
+  color: #ffffff;
+}
+
+.pf-filter-button.is-unread:hover {
+  background: #20bd5a;
+}
+
+.pf-filter-button.is-unread .pf-filter-count {
+  background: #ffffff;
+  color: #15803d;
+}
+
+.pf-filter-button.is-unread.is-active {
+  border-color: #bbf7d0;
+  background: #16a34a;
+  color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+}
+
+.pf-filter-button.is-unread.is-active .pf-filter-count {
+  background: #ffffff;
+  color: #15803d;
+}
+         .pf-search-row { display: flex; width: min(530px, 100%); justify-self: end; align-items: center; gap: 8px; }
          .pf-search-row > div { position: relative; flex: 1; }
-         .pf-search-row span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: #64748b; }
+         .pf-search-row > div > span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: #64748b; }
          .pf-search-input { width: 100%; height: 36px; border: 1px solid #d8e0ea; border-radius: 7px; padding: 0 11px 0 32px; background: #fff; color: #1e293b; font-size: 12px; outline: none; }
          .pf-search-input:focus { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.18); }
          .pf-refresh-button { height: 36px; border: 1px solid rgba(255,255,255,.4); border-radius: 7px; padding: 0 11px; background: rgba(255,255,255,.12); color: #fff; font-size: 11px; font-weight: 800; }
+
+         .pf-commercial-stage-filter {
+           position: relative;
+           display: flex;
+           height: 36px;
+           min-width: 168px;
+           align-items: center;
+           border: 1px solid #65d9bd;
+           border-radius: 7px;
+           background: #ffffff;
+           overflow: hidden;
+         }
+         .pf-commercial-stage-filter > span {
+           position: absolute;
+           top: 4px;
+           left: 10px;
+           z-index: 1;
+           color: #008f72;
+           font-size: 7px;
+           font-weight: 900;
+           line-height: 1;
+           letter-spacing: .08em;
+           text-transform: uppercase;
+           pointer-events: none;
+         }
+         .pf-commercial-stage-filter select {
+           width: 100%;
+           height: 100%;
+           border: 0;
+           padding: 11px 28px 1px 9px;
+           background: transparent;
+           color: #0f513f;
+           font-size: 10px;
+           font-weight: 900;
+           outline: none;
+           cursor: pointer;
+         }
+         .pf-commercial-stage-filter:focus-within {
+           border-color: #00a884;
+           box-shadow: 0 0 0 3px rgba(0,168,132,.16);
+         }
  
          .pf-loading { border: 1px solid #dbe2ea; border-radius: 10px; padding: 55px 20px; background: #fff; color: #64748b; text-align: center; font-size: 13px; font-weight: 700; }
          .pf-empty-state { overflow: hidden; border: 1px solid #dbe2ea; border-radius: 10px; background: #fff; box-shadow: 0 2px 6px rgba(15,23,42,.035); }
@@ -2369,6 +3108,55 @@ const novosLeads =
          .pf-lead-actions .pf-action-reply { border-color: #7c3aed; background: #7c3aed; color: #fff; }
          .pf-lead-actions .pf-action-close { color: #b45309; }
  
+         .pf-tab-count { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 999px; background: #00a884; color: #fff; font-size: 9px; }
+         .pf-action-schedule { border-color: #8adaca !important; background: #e9fbf6 !important; color: #00856a !important; }
+         .pf-next-task { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 9px 10px; border: 1px solid #9ce1d3; border-radius: 9px; background: #effcf8; }
+         .pf-next-task > div:first-child { display: grid; gap: 2px; min-width: 0; }
+         .pf-next-task span { color: #00856a; font-size: 8px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
+         .pf-next-task strong { color: #075e54; font-size: 10px; }
+         .pf-next-task small { color: #667781; font-size: 9px; }
+         .pf-next-task > div:last-child { display: flex; gap: 5px; }
+         .pf-next-task button { border: 1px solid #b7dcd4; border-radius: 6px; padding: 5px 7px; background: #fff; color: #087d69; font-size: 9px; font-weight: 900; white-space: nowrap; }
+
+         .pf-agenda-page { overflow: hidden; border: 1px solid #dbe2ea; border-radius: 10px; background: #f7f9fa; }
+         .pf-agenda-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid #e3e8eb; background: #fff; }
+         .pf-agenda-header h2 { margin: 0; color: #111b21; font-size: 16px; font-weight: 900; }
+         .pf-agenda-header p { margin: 3px 0 0; color: #667781; font-size: 11px; }
+         .pf-agenda-header > button { border: 1px solid #cbd5da; border-radius: 7px; padding: 7px 10px; background: #fff; color: #54656f; font-size: 10px; font-weight: 900; }
+         .pf-agenda-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #e3e8eb; background: #f0f2f5; }
+         .pf-agenda-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+         .pf-agenda-filters button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; padding: 6px 9px; background: #e1e7ea; color: #3b4a54; font-size: 10px; font-weight: 800; }
+         .pf-agenda-filters button.is-active { border-color: #00a884; background: #00a884; color: #fff; }
+         .pf-agenda-filters strong { display: inline-flex; min-width: 17px; height: 17px; align-items: center; justify-content: center; border-radius: 999px; background: rgba(255,255,255,.75); color: #52636d; font-size: 8px; }
+         .pf-agenda-filters button.is-active strong { color: #00856a; }
+         .pf-agenda-toolbar > input { width: min(280px, 100%); border: 1px solid #cbd5da; border-radius: 8px; padding: 8px 10px; background: #fff; color: #111b21; font-size: 10px; outline: none; }
+         .pf-task-list { display: grid; gap: 8px; padding: 12px; }
+         .pf-task-card { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 12px; border: 1px solid #dbe2ea; border-left: 3px solid #00a884; border-radius: 9px; padding: 11px 12px; background: #fff; box-shadow: 0 1px 2px rgba(11,20,26,.05); }
+         .pf-task-card.is-overdue { border-left-color: #ef4444; }
+         .pf-task-icon { display: flex; width: 34px; height: 34px; align-items: center; justify-content: center; border-radius: 50%; background: #d9fdd3; color: #00856a; font-size: 16px; font-weight: 900; }
+         .pf-task-content { min-width: 0; }
+         .pf-task-title-row { display: flex; align-items: center; gap: 8px; }
+         .pf-task-title-row strong { overflow: hidden; color: #111b21; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+         .pf-task-title-row span { border-radius: 999px; padding: 3px 7px; background: #e9edef; color: #54656f; font-size: 8px; font-weight: 900; text-transform: uppercase; }
+         .pf-task-content p { margin: 4px 0; color: #54656f; font-size: 10px; }
+         .pf-task-content small { color: #8696a0; font-size: 9px; font-weight: 700; }
+         .pf-task-card.is-overdue .pf-task-content small { color: #dc2626; }
+         .pf-task-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 360px; }
+         .pf-task-actions button { border: 1px solid #cbd5da; border-radius: 6px; padding: 6px 8px; background: #fff; color: #54656f; font-size: 9px; font-weight: 900; }
+         .pf-task-actions button.is-complete { border-color: #00a884; background: #00a884; color: #fff; }
+         .pf-task-completed { border-radius: 999px; padding: 5px 9px; background: #d9fdd3; color: #087d69; font-size: 9px; font-weight: 900; }
+         .pf-agenda-empty { display: grid; justify-items: center; gap: 5px; padding: 70px 20px; color: #667781; text-align: center; }
+         .pf-agenda-empty > span { display: flex; width: 45px; height: 45px; align-items: center; justify-content: center; border-radius: 50%; background: #d9fdd3; color: #00856a; font-size: 20px; }
+         .pf-agenda-empty strong { color: #3b4a54; font-size: 13px; }
+         .pf-agenda-empty p { margin: 0; font-size: 10px; }
+         .pf-task-modal-titlebar { border-bottom-color: #00856a !important; background: #00a884 !important; color: #fff !important; }
+         .pf-task-modal-titlebar h2, .pf-task-modal-titlebar p { color: #fff !important; }
+         .pf-task-form { display: grid; gap: 13px; }
+         .pf-task-form label { display: grid; gap: 5px; }
+         .pf-task-form label > span { color: #54656f; font-size: 10px; font-weight: 900; }
+         .pf-task-form input, .pf-task-form select, .pf-task-form textarea { width: 100%; border: 1px solid #cbd5da; border-radius: 8px; padding: 9px 10px; background: #fff; color: #111b21; font-size: 11px; outline: none; }
+         .pf-task-form input:focus, .pf-task-form select:focus, .pf-task-form textarea:focus { border-color: #00a884; box-shadow: 0 0 0 3px rgba(0,168,132,.12); }
+
          .pf-messages-page { overflow: hidden; border: 1px solid #dbe2ea; border-radius: 10px; background: #fff; }
          .pf-section-header { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 15px; border-bottom: 1px solid #e2e8f0; }
          .pf-section-header h2 { margin: 0; font-size: 15px; font-weight: 900; }
@@ -2474,7 +3262,343 @@ const novosLeads =
          .pf-import-rules p { margin: 5px 0 9px; color: #64748b; font-size: 11px; line-height: 1.55; }
          .pf-import-rules button { padding: 7px 10px; border-color: #bfdbfe; color: #1d4ed8; }
          .pf-import-result { border: 1px solid #bfdbfe !important; border-radius: 8px; padding: 10px 12px !important; background: #eff6ff !important; color: #1e40af; font-size: 11px; font-weight: 800; }
- 
+
+         /* ================================================================
+            Aparencia inspirada no WhatsApp Web
+            ================================================================ */
+         .pf-page {
+           --wa-green: #00a884;
+           --wa-green-strong: #008f72;
+           --wa-green-soft: #d9fdd3;
+           --wa-app: #f0f2f5;
+           --wa-panel: #ffffff;
+           --wa-chat: #efeae2;
+           --wa-border: #d8dee2;
+           --wa-text: #111b21;
+           --wa-muted: #667781;
+           --wa-outgoing: #d9fdd3;
+           --wa-incoming: #ffffff;
+           transition: background .2s ease, color .2s ease;
+         }
+
+         .pf-theme-button {
+           display: inline-flex;
+           min-height: 36px;
+           align-items: center;
+           gap: 6px;
+           border: 1px solid #cbd5e1;
+           border-radius: 999px;
+           padding: 0 11px;
+           background: #ffffff;
+           color: #54656f;
+           font-size: 11px;
+           font-weight: 800;
+           box-shadow: 0 1px 2px rgba(17,27,33,.06);
+         }
+         .pf-theme-button:hover { border-color: var(--wa-green); color: var(--wa-green-strong); }
+         .pf-theme-button span { font-size: 15px; line-height: 1; }
+
+         .pf-primary-button {
+           background: var(--wa-green);
+           box-shadow: 0 5px 14px rgba(0,168,132,.18);
+         }
+         .pf-primary-button:hover { background: var(--wa-green-strong); }
+         .pf-import-button:hover { border-color: var(--wa-green); background: #f1fffb; color: var(--wa-green-strong); }
+         .pf-tab.is-active { background: #202c33; }
+
+         .pf-toolbar {
+           border: 1px solid #2a3942;
+           background: #202c33;
+         }
+         .pf-filter-button.is-active {
+           border-color: rgba(255,255,255,.2);
+           background: #2a3942;
+           color: #ffffff;
+         }
+         .pf-filter-button.is-active .pf-filter-count {
+           border-color: transparent;
+           background: var(--wa-green);
+           color: #ffffff;
+         }
+         .pf-filter-button.is-unread,
+         .pf-filter-button.is-unread.is-active {
+           border-color: #35d6b4;
+           background: var(--wa-green);
+           color: #ffffff;
+           box-shadow: none;
+         }
+         .pf-filter-button.is-unread:hover,
+         .pf-filter-button.is-unread.is-active:hover { background: var(--wa-green-strong); }
+
+         .pf-commercial-workspace {
+           grid-template-columns: 330px minmax(0,1fr);
+           min-height: 610px;
+           border-color: var(--wa-border);
+           border-radius: 9px;
+           background: var(--wa-panel);
+           box-shadow: 0 6px 22px rgba(17,27,33,.09);
+         }
+         .pf-prospect-sidebar {
+           border-right-color: var(--wa-border);
+           background: var(--wa-panel);
+         }
+         .pf-prospect-sidebar-header {
+           min-height: 58px;
+           border-bottom-color: var(--wa-border);
+           background: var(--wa-app);
+         }
+         .pf-prospect-sidebar-header strong { color: var(--wa-text); }
+         .pf-prospect-sidebar-header span:not(.pf-prospect-total) { color: var(--wa-muted); }
+         .pf-prospect-total { background: var(--wa-green); color: #ffffff; }
+         .pf-prospect-list { max-height: 650px; padding: 0; }
+         .pf-prospect-item {
+           min-height: 61px;
+           grid-template-columns: 40px minmax(0,1fr);
+           gap: 10px;
+           border-bottom-color: #e9edef;
+           border-radius: 0;
+           padding: 9px 11px;
+         }
+         .pf-prospect-item:hover { background: #f5f6f6; }
+         .pf-prospect-item.is-active {
+           background: #d9fdd3;
+           box-shadow: inset 3px 0 var(--wa-green);
+         }
+         .pf-prospect-avatar {
+           width: 40px;
+           height: 40px;
+           background: #6a7b85;
+           font-size: 10px;
+         }
+         .pf-prospect-item.is-active .pf-prospect-avatar { background: var(--wa-green); }
+         .pf-prospect-name-row strong { color: var(--wa-text); font-size: 12px; }
+         .pf-prospect-company { color: #54656f; }
+         .pf-prospect-last-message { color: var(--wa-muted); font-size: 10px; }
+         .pf-prospect-name-row small { background: #e9edef; color: #667781; }
+         .pf-prospect-item.is-active .pf-prospect-name-row small { background: var(--wa-green); color: #fff; }
+
+         .pf-selected-pane {
+           padding: 0;
+           background-color: var(--wa-chat);
+           background-image:
+             radial-gradient(circle at 20% 30%, rgba(17,27,33,.035) 0 1px, transparent 1.5px),
+             radial-gradient(circle at 75% 65%, rgba(17,27,33,.028) 0 1px, transparent 1.5px);
+           background-size: 34px 34px, 42px 42px;
+         }
+         .pf-selected-pane .pf-lead-card {
+           min-height: 100%;
+           border: 0;
+           border-radius: 0;
+           background: transparent;
+           box-shadow: none;
+         }
+         .pf-selected-pane .pf-lead-card:hover { border-color: transparent; box-shadow: none; }
+         .pf-selected-pane .pf-lead-card > div {
+           gap: 10px;
+           padding: 12px;
+         }
+         .pf-lead-info {
+           align-self: start;
+           border: 1px solid rgba(216,222,226,.9);
+           border-radius: 9px;
+           padding: 12px;
+           background: rgba(255,255,255,.94);
+           box-shadow: 0 1px 2px rgba(17,27,33,.05);
+         }
+         .pf-lead-info > div:first-child > div { background: #6a7b85; }
+         .pf-lead-card[data-canal="WHATSAPP"] .pf-lead-info > div:first-child > div { background: var(--wa-green); }
+         .pf-lead-info > div:first-child > button { color: var(--wa-text); }
+         .pf-lead-info > div:nth-child(2),
+         .pf-lead-info > div:nth-child(3) { color: var(--wa-muted); }
+         .pf-lead-info > div:nth-child(3) { border-top-color: #e9edef; }
+
+         .pf-message-preview {
+           align-self: start;
+           border: 0;
+           border-radius: 0;
+           background: transparent;
+         }
+         .pf-message-preview > .pf-conversation-state {
+           min-height: 154px;
+           justify-content: flex-start;
+           border: 0;
+           border-radius: 0;
+           padding: 11px;
+           background: transparent;
+         }
+         .pf-conversation-state.is-my-turn,
+         .pf-conversation-state.is-client-turn { border-left: 0; background: transparent; }
+         .pf-conversation-title {
+           align-self: center;
+           border-radius: 7px;
+           padding: 5px 9px;
+           background: rgba(255,255,255,.78);
+           color: #54656f;
+           font-size: 10px;
+           box-shadow: 0 1px 1px rgba(17,27,33,.08);
+         }
+         .pf-conversation-subtitle { align-self: center; margin-top: 5px; color: #667781; font-size: 9px; }
+         .pf-last-message {
+           width: fit-content;
+           max-width: 82%;
+           margin-top: 16px;
+           border: 0;
+           border-radius: 8px;
+           padding: 8px 10px;
+           background: var(--wa-incoming);
+           color: #111b21;
+           font-size: 11px;
+           line-height: 1.45;
+           box-shadow: 0 1px 2px rgba(17,27,33,.14);
+         }
+         .pf-conversation-state.is-client-turn .pf-last-message {
+           align-self: flex-end;
+           background: var(--wa-outgoing);
+         }
+         .pf-conversation-state.is-my-turn .pf-last-message { align-self: flex-start; }
+
+         .pf-selected-pane .pf-lead-actions {
+           margin: auto -12px -12px;
+           padding: 10px 12px;
+           border-top-color: var(--wa-border);
+           background: rgba(240,242,245,.96);
+         }
+         .pf-lead-actions button { border-color: #cbd5da; color: #54656f; }
+         .pf-lead-actions > button:first-child,
+         .pf-lead-actions .pf-action-reply {
+           border-color: var(--wa-green);
+           background: var(--wa-green);
+           color: #ffffff;
+         }
+         .pf-open-channel-button { border-color: var(--wa-green) !important; background: var(--wa-green) !important; }
+
+         .pf-history-titlebar { background: #202c33; }
+         .pf-history-list {
+           background-color: var(--wa-chat);
+           background-image: radial-gradient(circle at 30% 40%, rgba(17,27,33,.035) 0 1px, transparent 1.5px);
+           background-size: 36px 36px;
+         }
+         .pf-chat-bubble { border: 0; border-radius: 3px 9px 9px 9px; background: var(--wa-incoming); }
+         .pf-chat-row.is-mine .pf-chat-bubble {
+           border: 0;
+           border-radius: 9px 3px 9px 9px;
+           background: var(--wa-outgoing);
+         }
+         .pf-chat-row.is-mine .pf-chat-meta strong { color: var(--wa-green-strong); }
+
+         /* Tema escuro */
+         .pf-page.is-dark {
+           --wa-app: #202c33;
+           --wa-panel: #111b21;
+           --wa-chat: #0b141a;
+           --wa-border: #2a3942;
+           --wa-text: #e9edef;
+           --wa-muted: #8696a0;
+           --wa-outgoing: #005c4b;
+           --wa-incoming: #202c33;
+           background: #0b141a;
+           color: #e9edef;
+         }
+         .pf-page.is-dark .pf-header h1 { color: #e9edef; }
+         .pf-page.is-dark .pf-header h1 + p { color: #8696a0; }
+         .pf-page.is-dark .pf-header div[class*="uppercase"] { color: #53bdeb; }
+         .pf-page.is-dark .pf-header > div:last-child > div > div:first-child { background: #202c33; color: #00a884; }
+         .pf-page.is-dark .pf-theme-button,
+         .pf-page.is-dark .pf-import-button {
+           border-color: #3b4a54;
+           background: #202c33;
+           color: #d1d7db;
+           box-shadow: none;
+         }
+         .pf-page.is-dark .pf-theme-button:hover,
+         .pf-page.is-dark .pf-import-button:hover { border-color: #00a884; background: #26353d; color: #00d9a9; }
+         .pf-page.is-dark .pf-tabs { border-color: #2a3942; background: #111b21; }
+         .pf-page.is-dark .pf-tab { color: #8696a0; }
+         .pf-page.is-dark .pf-tab:hover { background: #202c33; color: #e9edef; }
+         .pf-page.is-dark .pf-tab.is-active { background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-toolbar { border-color: #2a3942; background: #202c33; }
+         .pf-page.is-dark .pf-search-input {
+           border-color: #2a3942;
+           background: #2a3942;
+           color: #e9edef;
+         }
+         .pf-page.is-dark .pf-search-input::placeholder { color: #8696a0; }
+         .pf-page.is-dark .pf-commercial-stage-filter {
+           border-color: #00a884;
+           background: #2a3942;
+         }
+         .pf-page.is-dark .pf-commercial-stage-filter > span { color: #53e3bd; }
+         .pf-page.is-dark .pf-commercial-stage-filter select { color: #e9edef; }
+         .pf-page.is-dark .pf-commercial-stage-filter option { background: #202c33; color: #e9edef; }
+         .pf-page.is-dark .pf-refresh-button { border-color: #3b4a54; background: #2a3942; }
+         .pf-page.is-dark .pf-prospect-item { border-bottom-color: #202c33; color: #d1d7db; }
+         .pf-page.is-dark .pf-prospect-item:hover { background: #202c33; }
+         .pf-page.is-dark .pf-prospect-item.is-active { background: #2a3942; box-shadow: inset 3px 0 #00a884; }
+         .pf-page.is-dark .pf-prospect-name-row strong { color: #e9edef; }
+         .pf-page.is-dark .pf-prospect-company,
+         .pf-page.is-dark .pf-prospect-last-message { color: #8696a0; }
+         .pf-page.is-dark .pf-prospect-name-row small { background: #2a3942; color: #8696a0; }
+         .pf-page.is-dark .pf-prospect-item.is-active .pf-prospect-name-row small { background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-lead-info {
+           border-color: #2a3942;
+           background: rgba(32,44,51,.96);
+           box-shadow: 0 1px 2px rgba(0,0,0,.22);
+         }
+         .pf-page.is-dark .pf-lead-info > div:first-child > button { color: #e9edef; }
+         .pf-page.is-dark .pf-lead-info > div:first-child > span { background: #2a3942; color: #d1d7db; }
+         .pf-page.is-dark .pf-lead-info > div:nth-child(2),
+         .pf-page.is-dark .pf-lead-info > div:nth-child(3) { color: #8696a0; }
+         .pf-page.is-dark .pf-lead-info > div:nth-child(3) { border-top-color: #2a3942; }
+         .pf-page.is-dark .pf-lead-info > div:nth-child(3) span { background: #2a3942; color: #d1d7db; }
+         .pf-page.is-dark .pf-conversation-title { background: #182229; color: #8696a0; }
+         .pf-page.is-dark .pf-conversation-subtitle { color: #667781; }
+         .pf-page.is-dark .pf-last-message { color: #e9edef; }
+         .pf-page.is-dark .pf-selected-pane .pf-lead-actions { border-top-color: #2a3942; background: rgba(32,44,51,.97); }
+         .pf-page.is-dark .pf-lead-actions button { border-color: #3b4a54; background: #202c33; color: #d1d7db; }
+         .pf-page.is-dark .pf-lead-actions > button:first-child,
+         .pf-page.is-dark .pf-lead-actions .pf-action-reply { border-color: #00a884; background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-action-schedule { border-color: #087d69 !important; background: #163832 !important; color: #53d6ba !important; }
+         .pf-page.is-dark .pf-next-task { border-color: #176b5c; background: #132f2b; }
+         .pf-page.is-dark .pf-next-task strong { color: #e9edef; }
+         .pf-page.is-dark .pf-next-task small { color: #8696a0; }
+         .pf-page.is-dark .pf-next-task button { border-color: #3b4a54; background: #202c33; color: #53d6ba; }
+         .pf-page.is-dark .pf-agenda-page { border-color: #2a3942; background: #0b141a; }
+         .pf-page.is-dark .pf-agenda-header { border-bottom-color: #2a3942; background: #111b21; }
+         .pf-page.is-dark .pf-agenda-header h2 { color: #e9edef; }
+         .pf-page.is-dark .pf-agenda-header p { color: #8696a0; }
+         .pf-page.is-dark .pf-agenda-header > button { border-color: #3b4a54; background: #202c33; color: #d1d7db; }
+         .pf-page.is-dark .pf-agenda-toolbar { border-bottom-color: #2a3942; background: #202c33; }
+         .pf-page.is-dark .pf-agenda-filters button { background: #2a3942; color: #d1d7db; }
+         .pf-page.is-dark .pf-agenda-filters button.is-active { background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-agenda-toolbar > input { border-color: #3b4a54; background: #2a3942; color: #e9edef; }
+         .pf-page.is-dark .pf-task-card { border-color: #2a3942; border-left-color: #00a884; background: #111b21; }
+         .pf-page.is-dark .pf-task-card.is-overdue { border-left-color: #ef4444; }
+         .pf-page.is-dark .pf-task-title-row strong { color: #e9edef; }
+         .pf-page.is-dark .pf-task-title-row span { background: #2a3942; color: #aebac1; }
+         .pf-page.is-dark .pf-task-content p { color: #aebac1; }
+         .pf-page.is-dark .pf-task-actions button { border-color: #3b4a54; background: #202c33; color: #d1d7db; }
+         .pf-page.is-dark .pf-task-actions button.is-complete { border-color: #00a884; background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-task-form label > span { color: #d1d7db; }
+         .pf-page.is-dark .pf-task-form input,
+         .pf-page.is-dark .pf-task-form select,
+         .pf-page.is-dark .pf-task-form textarea { border-color: #3b4a54; background: #202c33; color: #e9edef; color-scheme: dark; }
+         .pf-page.is-dark .pf-messages-page,
+         .pf-page.is-dark .pf-cadence-card,
+         .pf-page.is-dark .pf-empty-state { border-color: #2a3942; background: #111b21; color: #e9edef; }
+         .pf-page.is-dark .pf-section-header { border-bottom-color: #2a3942; }
+         .pf-page.is-dark .pf-section-header p,
+         .pf-page.is-dark .pf-cadence-card p { color: #8696a0; }
+         .pf-page.is-dark .pf-cadence-card:hover { border-color: #00a884; background: #202c33; }
+         .pf-page.is-dark .pf-modal { border-color: #3b4a54; background: #111b21; color: #e9edef; }
+         .pf-page.is-dark .pf-modal-titlebar,
+         .pf-page.is-dark .pf-modal-footer { border-color: #2a3942; background: #202c33; }
+         .pf-page.is-dark .pf-modal-body label { color: #d1d7db; }
+         .pf-page.is-dark .pf-modal-body textarea,
+         .pf-page.is-dark .campo { border-color: #3b4a54; background: #202c33; color: #e9edef; }
+         .pf-page.is-dark .pf-history-list { background-color: #0b141a; }
+         .pf-page.is-dark .pf-chat-bubble p { color: #e9edef; }
+         .pf-page.is-dark .pf-chat-row.is-system .pf-chat-bubble { background: #182229; color: #8696a0; }
+
          @media (max-width: 1100px) {
            .pf-commercial-workspace { grid-template-columns: 270px minmax(0,1fr); }
            .pf-selected-pane .pf-lead-card > div { grid-template-columns: 1fr; }
@@ -2492,8 +3616,9 @@ const novosLeads =
            .pf-header h1 + p { max-width: 390px; }
            .pf-primary-button { padding: 9px 11px; }
            .pf-import-button { padding: 9px 11px; }
-           .pf-toolbar > div { align-items: stretch; flex-direction: column; }
+           .pf-toolbar > .pf-toolbar-layout { align-items: stretch; }
            .pf-search-row { width: 100%; }
+           .pf-commercial-stage-filter { min-width: 150px; }
            .pf-commercial-workspace { grid-template-columns: 1fr; min-height: 0; }
            .pf-prospect-sidebar { border-right: 0; border-bottom: 1px solid #dbe2ea; }
            .pf-prospect-list { max-height: 260px; }
@@ -2513,11 +3638,17 @@ const novosLeads =
            .pf-history-channel { display: none; }
            .pf-history-list { min-height: 390px; padding: 11px; }
            .pf-chat-bubble { max-width: 90%; }
+           .pf-agenda-toolbar { align-items: stretch; flex-direction: column; }
+           .pf-agenda-toolbar > input { width: 100%; }
+           .pf-task-card { grid-template-columns: auto minmax(0,1fr); }
+           .pf-task-actions { grid-column: 1 / -1; justify-content: flex-start; max-width: none; }
          }
          @media (max-width: 480px) {
            .pf-header h1 + p, .pf-header div[class*="uppercase"] { display: none; }
            .pf-header-actions { flex-direction: column-reverse; align-items: stretch; }
            .pf-header-actions button { justify-content: center; }
+           .pf-search-row { flex-wrap: wrap; }
+           .pf-commercial-stage-filter { width: 100%; }
            .pf-tabs { width: 100%; }
            .pf-tab { flex: 1; justify-content: center; }
            .pf-empty-state > div:nth-child(2):not(:last-child) { grid-template-columns: 1fr; }
