@@ -1,4 +1,4 @@
-    import { useCallback, useEffect, useMemo, useState } from "react";
+        import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  import { buildWebhookUrl } from "../config/globals";
  
  /*
@@ -94,7 +94,10 @@ const EMPRESA_PROSPECTFLOW_ID = Number(
 );
 
 // Polling leve para manter a central atualizada sem recarregar ou piscar a tela.
-const ATUALIZACAO_AUTOMATICA_MS = 30_000;
+const ATUALIZACAO_AUTOMATICA_MS = 5 * 60_000;
+// A conversa precisa atualizar mais rápido que o restante da tela.
+// A consulta é silenciosa e não causa o efeito de recarregar/piscar.
+const ATUALIZACAO_CONVERSA_MS = 10_000;
  
  function normalizarResposta(valor) {
    let atual = valor;
@@ -189,7 +192,7 @@ function dataHoraBR(valor) {
   );
 }
  
- function interacaoVisual(tipo) {
+function interacaoVisual(tipo) {
    const mapa = {
      ENVIO: "Você",
      RESPOSTA: "Lead",
@@ -200,6 +203,44 @@ function dataHoraBR(valor) {
  
    return mapa[tipo] || tipo || "Sistema";
  }
+
+function statusEntregaVisual(interacao) {
+  const status = String(interacao?.status_entrega || "").toUpperCase();
+
+  if (interacao?.erro_envio || status === "ERROR") {
+    return {
+      simbolo: "⚠",
+      classe: "is-error",
+      titulo: interacao?.erro_envio || "Erro no envio",
+    };
+  }
+
+  if (interacao?.lida_em || ["READ", "PLAYED"].includes(status)) {
+    return {
+      simbolo: "✓✓",
+      classe: "is-read",
+      titulo: "Mensagem lida",
+    };
+  }
+
+  if (interacao?.entregue_em || status === "DELIVERY_ACK") {
+    return {
+      simbolo: "✓✓",
+      classe: "is-delivered",
+      titulo: "Mensagem entregue",
+    };
+  }
+
+  if (interacao?.enviada_em || ["PENDING", "SERVER_ACK"].includes(status)) {
+    return {
+      simbolo: "✓",
+      classe: "is-sent",
+      titulo: "Mensagem enviada",
+    };
+  }
+
+  return null;
+}
  
  function canalVisual(canal) {
    const mapa = {
@@ -293,7 +334,15 @@ function dataHoraBR(valor) {
    const [modalHistorico, setModalHistorico] = useState(false);
    const [leadHistorico, setLeadHistorico] = useState(null);
    const [historico, setHistorico] = useState([]);
+   const [historicoLeadId, setHistoricoLeadId] = useState(null);
+   const [modoPainel, setModoPainel] = useState("COMERCIAL");
+   const [textoConversa, setTextoConversa] = useState("");
+   const [carregandoConversa, setCarregandoConversa] = useState(false);
    const [leadSelecionadoId, setLeadSelecionadoId] = useState(null);
+   const [larguraListaProspects, setLarguraListaProspects] = useState(330);
+   const [redimensionandoLista, setRedimensionandoLista] = useState(false);
+   const workspaceComercialRef = useRef(null);
+   const modoPainelRef = useRef("COMERCIAL");
    const [modalEnvio, setModalEnvio] = useState(null);
    const [modalAcao, setModalAcao] = useState(null);
    const [textoAcao, setTextoAcao] = useState("");
@@ -310,6 +359,94 @@ function dataHoraBR(valor) {
 const [leadAgenda, setLeadAgenda] = useState(null);
 const [agendaLead, setAgendaLead] = useState([]);
 const [resumoLeadAgenda, setResumoLeadAgenda] = useState({});
+
+
+const [qrCodeWhatsApp, setQrCodeWhatsApp] = useState(null);
+const [carregandoQr, setCarregandoQr] = useState(false);
+
+useEffect(() => {
+  modoPainelRef.current = modoPainel;
+}, [modoPainel]);
+
+const ajustarLarguraListaProspects = useCallback((largura) => {
+  setLarguraListaProspects(Math.min(620, Math.max(260, largura)));
+}, []);
+
+useEffect(() => {
+  if (!redimensionandoLista) return undefined;
+
+  function moverDivisoria(event) {
+    const inicioWorkspace =
+      workspaceComercialRef.current?.getBoundingClientRect().left;
+
+    if (inicioWorkspace == null) return;
+    ajustarLarguraListaProspects(event.clientX - inicioWorkspace);
+  }
+
+  function pararRedimensionamento() {
+    setRedimensionandoLista(false);
+  }
+
+  const cursorAnterior = document.body.style.cursor;
+  const selecaoAnterior = document.body.style.userSelect;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+
+  window.addEventListener("pointermove", moverDivisoria);
+  window.addEventListener("pointerup", pararRedimensionamento);
+
+  return () => {
+    window.removeEventListener("pointermove", moverDivisoria);
+    window.removeEventListener("pointerup", pararRedimensionamento);
+    document.body.style.cursor = cursorAnterior;
+    document.body.style.userSelect = selecaoAnterior;
+  };
+}, [ajustarLarguraListaProspects, redimensionandoLista]);
+
+async function gerarQrCodeWhatsApp() {
+  try {
+    setCarregandoQr(true);
+
+    const resposta = await fetch(
+      buildWebhookUrl("prospectflow-conectar-whatsapp"),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          empresa_id: empresaId,
+        }),
+      },
+    );
+
+    const dados = await resposta.json();
+
+    // Funciona mesmo se o n8n ainda devolver array.
+    const resultado = Array.isArray(dados) ? dados[0] : dados;
+
+    if (resultado.status === "PRECISA_QR" && resultado.qrCode) {
+      setQrCodeWhatsApp(resultado.qrCode);
+      return;
+    }
+
+    if (resultado.status === "CONECTADO") {
+      alert("O WhatsApp já está conectado.");
+      return;
+    }
+
+    throw new Error(
+      resultado.mensagem || "Não foi possível gerar o QR Code.",
+    );
+  } catch (erro) {
+    console.error(erro);
+    alert(erro.message || "Erro ao gerar QR Code.");
+  } finally {
+    setCarregandoQr(false);
+  }
+}
+
+
 
    useEffect(() => {
      try {
@@ -459,7 +596,8 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
   filtro === "NOVO"
     ? leadsRecebidos.filter(
         (lead) =>
-          lead.status === "NOVO"  ,
+          lead.status === "NOVO" &&
+        lead.canal_preferido !== "TELEFONE" ,
       )
 
     : filtro === "LIGAR"
@@ -531,7 +669,10 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
      if (aba === "LEADS") {
        const primeiraCarga = window.setTimeout(() => carregarLeads(), 250);
        const atualizarEmSegundoPlano = () => {
-         if (document.visibilityState === "visible") {
+         if (
+           document.visibilityState === "visible" &&
+           modoPainelRef.current !== "CONVERSA"
+         ) {
            carregarLeads({ silencioso: true });
          }
        };
@@ -580,6 +721,7 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
            lead_id: leadHistorico.id,
          });
          setHistorico(Array.isArray(retorno?.dados) ? retorno.dados : []);
+         setHistoricoLeadId(leadHistorico.id);
        } catch {
          // Mantém as mensagens atuais se uma atualização silenciosa falhar.
        }
@@ -593,27 +735,40 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
      return () => window.clearInterval(intervalo);
    }, [chamarApi, leadHistorico?.id, modalHistorico]);
  
-   const quantidadesFiltro = useMemo(
-     () => ({
-       HOJE: Number(resumo.para_hoje || 0),
-      NOVO: Number(resumo.novos || 0),
-       TODOS: Number(resumo.total || 0),
-       AGUARDANDO_MINHA_RESPOSTA: Number(
-         resumo.aguardando_minha_resposta || 0,
-       ),
-       AGUARDANDO_CLIENTE: Number(
-         resumo.aguardando_cliente ??
-           resumo.aguardando_resposta ??
-           resumo.em_cadencia ??
-           0,
-       ),
-       CONVERTIDO: Number(resumo.convertidos || 0),
-       ENCERRADO: Number(resumo.encerrados || 0),
-       BLOQUEADO: Number(resumo.bloqueados || 0),
-       NAO_LIDO: Number(resumo.nao_lidos || 0),
-     }),
-     [resumo],
-   );
+ const quantidadesFiltro = useMemo(
+  () => ({
+    HOJE: Number(resumo.para_hoje || 0),
+
+    NOVO:
+      filtro === "NOVO"
+        ? leads.length
+        : Number(resumo.novos_sem_telefone ?? resumo.novos ?? 0),
+
+    LIGAR:
+      filtro === "LIGAR"
+        ? leads.length
+        : Number(resumo.sem_whatsapp ?? resumo.telefone ?? 0),
+
+    TODOS: Number(resumo.total || 0),
+
+    AGUARDANDO_MINHA_RESPOSTA: Number(
+      resumo.aguardando_minha_resposta || 0
+    ),
+
+    AGUARDANDO_CLIENTE: Number(
+      resumo.aguardando_cliente ??
+        resumo.aguardando_resposta ??
+        resumo.em_cadencia ??
+        0
+    ),
+
+    CONVERTIDO: Number(resumo.convertidos || 0),
+    ENCERRADO: Number(resumo.encerrados || 0),
+    BLOQUEADO: Number(resumo.bloqueados || 0),
+    NAO_LIDO: Number(resumo.nao_lidos || 0),
+  }),
+  [resumo, filtro, leads.length]
+);
 
    const leadSelecionado = useMemo(
      () =>
@@ -622,6 +777,24 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
        null,
      [leadSelecionadoId, leads],
    );
+
+   const atualizarTela = useCallback(async () => {
+     if (modoPainel === "CONVERSA" && leadSelecionado?.id) {
+       try {
+         const retorno = await chamarApi("HISTORICO", {
+           lead_id: leadSelecionado.id,
+         });
+
+         setHistorico(Array.isArray(retorno?.dados) ? retorno.dados : []);
+         setHistoricoLeadId(leadSelecionado.id);
+       } catch (e) {
+         setErro(e.message || "Erro ao atualizar a conversa.");
+       }
+       return;
+     }
+
+     await carregarLeads();
+   }, [carregarLeads, chamarApi, leadSelecionado?.id, modoPainel]);
 
    useEffect(() => {
      if (leads.length === 0) {
@@ -637,6 +810,54 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
        setLeadSelecionadoId(leads[0].id);
      }
    }, [leadSelecionadoId, leads]);
+
+   useEffect(() => {
+     if (modoPainel !== "CONVERSA" || !leadSelecionado?.id) {
+       return undefined;
+     }
+
+     let cancelado = false;
+
+     const carregarConversa = async ({ silencioso = false } = {}) => {
+       try {
+         // Ao voltar para a conversa do mesmo lead, mantém o histórico visível
+         // enquanto busca os dados novos. Evita o clarão/flash de carregamento.
+         if (
+           !silencioso &&
+           String(historicoLeadId) !== String(leadSelecionado.id)
+         ) {
+           setCarregandoConversa(true);
+         }
+
+         const retorno = await chamarApi("HISTORICO", {
+           lead_id: leadSelecionado.id,
+         });
+
+         if (!cancelado) {
+           setHistorico(Array.isArray(retorno?.dados) ? retorno.dados : []);
+           setHistoricoLeadId(leadSelecionado.id);
+         }
+       } catch (e) {
+         if (!cancelado && !silencioso) {
+           setErro(e.message || "Erro ao consultar a conversa.");
+         }
+       } finally {
+         if (!cancelado && !silencioso) setCarregandoConversa(false);
+       }
+     };
+
+     carregarConversa();
+
+     const intervalo = window.setInterval(
+       () => carregarConversa({ silencioso: true }),
+       ATUALIZACAO_CONVERSA_MS,
+     );
+
+     return () => {
+       cancelado = true;
+       window.clearInterval(intervalo);
+     };
+   }, [chamarApi, leadSelecionado?.id, modoPainel]);
  
    function abrirNovoLead() {
      setFormLead(leadVazio);
@@ -1009,6 +1230,7 @@ function agendamentoInicial() {
        const retorno = await chamarApi("HISTORICO", { lead_id: lead.id });
        setLeadHistorico(lead);
        setHistorico(Array.isArray(retorno?.dados) ? retorno.dados : []);
+       setHistoricoLeadId(lead.id);
        setModalHistorico(true);
      } catch (e) {
        alert(e.message || "Erro ao consultar o histórico.");
@@ -1196,7 +1418,7 @@ function agendamentoInicial() {
      }
    }
 
-    async function selecionarLead(lead) {
+async function selecionarLead(lead) {
   setLeadSelecionadoId(lead.id);
 
   // Limpa qualquer erro antigo mostrado na UI.
@@ -1240,6 +1462,85 @@ function agendamentoInicial() {
       erro?.message ||
       "Não foi possível marcar o lead como lido.",
     );
+  }
+}
+
+async function abrirModoConversa(lead = leadSelecionado) {
+  if (!lead?.id) return;
+
+  setModoPainel("CONVERSA");
+  setTextoConversa("");
+  await selecionarLead(lead);
+}
+
+function abrirModoComercial(lead = leadSelecionado) {
+  if (lead?.id) {
+    selecionarLead(lead);
+  }
+
+  setModoPainel("COMERCIAL");
+  setTextoConversa("");
+}
+
+async function enviarMensagemDaConversa() {
+  const lead = leadSelecionado;
+  const mensagem = textoConversa.trim();
+
+  if (!lead) return;
+
+  if (!mensagem) {
+    alert("Digite uma mensagem antes de enviar.");
+    return;
+  }
+
+  if (lead.nao_contatar || lead.status === "BLOQUEADO") {
+    alert("Este contato está bloqueado e não pode receber novas mensagens.");
+    return;
+  }
+
+  if (lead.canal_preferido !== "WHATSAPP") {
+    alert("Este contato não está disponível para envio pelo WhatsApp.");
+    return;
+  }
+
+  if (["EM_CADENCIA", "AGUARDANDO_CLIENTE"].includes(lead.status)) {
+    const confirmar = window.confirm(
+      "Estamos aguardando a resposta do cliente. Deseja enviar outra mensagem mesmo assim?",
+    );
+
+    if (!confirmar) return;
+  }
+
+  if (lead.status === "ENCERRADO") {
+    const confirmar = window.confirm(
+      "Esta prospecção está encerrada. Deseja enviar uma nova mensagem mesmo assim?",
+    );
+
+    if (!confirmar) return;
+  }
+
+  try {
+    setExecutando(`CONVERSA-${lead.id}`);
+
+    await enviarMensagemWhatsApp({
+      leadId: lead.id,
+      telefone: lead.telefone,
+      mensagem,
+      tipoEnvio: "CONVERSA",
+    });
+
+    setTextoConversa("");
+
+    const retorno = await chamarApi("HISTORICO", {
+      lead_id: lead.id,
+    });
+
+    setHistorico(Array.isArray(retorno?.dados) ? retorno.dados : []);
+    setHistoricoLeadId(lead.id);
+  } catch (e) {
+    alert(e.message || "Erro ao enviar a mensagem ao lead.");
+  } finally {
+    setExecutando(null);
   }
 }
  
@@ -1353,6 +1654,14 @@ function abrirContatoDaAgenda(tarefa) {
              </div>
  
              <div className="pf-header-actions">
+
+              <button
+                    type="button"
+                    onClick={gerarQrCodeWhatsApp}
+                    disabled={carregandoQr}
+                  >
+                    {carregandoQr ? "Gerando QR Code..." : "Reconectar WhatsApp"}
+                  </button>
 
                <button
                  type="button"
@@ -1496,7 +1805,7 @@ function abrirContatoDaAgenda(tarefa) {
 
           <button
             type="button"
-            onClick={() => carregarLeads()}
+            onClick={atualizarTela}
             className="pf-refresh-button"
           >
             ↻ Atualizar
@@ -1567,7 +1876,15 @@ function abrirContatoDaAgenda(tarefa) {
                    </div>
                  </div>
                ) : (
-                 <section className="pf-commercial-workspace">
+                 <section
+                   ref={workspaceComercialRef}
+                   className={`pf-commercial-workspace ${
+                     redimensionandoLista ? "is-resizing" : ""
+                   }`}
+                   style={{
+                     "--pf-prospect-width": `${larguraListaProspects}px`,
+                   }}
+                 >
                    <aside className="pf-prospect-sidebar">
                      <div className="pf-prospect-sidebar-header">
                        <div>
@@ -1594,41 +1911,275 @@ function abrirContatoDaAgenda(tarefa) {
                                   "Sem mensagem registrada";
 
                          return (
-                           <button
+                           <div
                              key={lead.id}
-                             type="button"
-                             onClick={() => selecionarLead(lead)}
-                             onDoubleClick={() => abrirEditarLead(lead)}
-                             
                              className={`pf-prospect-item ${
                                ativo ? "is-active" : ""
                              }`}
                            >
-                             <span className="pf-prospect-avatar">
-                               {iniciaisLead(lead.nome)}
-                             </span>
-                             <span className="pf-prospect-copy">
-                               <span className="pf-prospect-name-row">
-                                 <strong>{lead.nome}</strong>
-                                 <small>{statusNome}</small>
+                             <button
+                               type="button"
+                               className="pf-prospect-select"
+                               onClick={() =>
+                                 modoPainel === "CONVERSA"
+                                   ? abrirModoConversa(lead)
+                                   : selecionarLead(lead)
+                               }
+                               onDoubleClick={() => abrirEditarLead(lead)}
+                             >
+                               <span className="pf-prospect-avatar">
+                                 {iniciaisLead(lead.nome)}
                                </span>
-                               <span className="pf-prospect-company">
-                                 {lead.empresa_nome ||
-                                   lead.segmento ||
-                                   lead.telefone ||
-                                   "Contato sem empresa"}
+                               <span className="pf-prospect-copy">
+                                 <span className="pf-prospect-name-row">
+                                   <strong>{lead.nome}</strong>
+                                   <small>{statusNome}</small>
+                                 </span>
+                                 <span className="pf-prospect-company">
+                                   {lead.empresa_nome ||
+                                     lead.segmento ||
+                                     lead.telefone ||
+                                     "Contato sem empresa"}
+                                 </span>
+                                 <span className="pf-prospect-last-message">
+                                   {ultimaMensagem}
+                                 </span>
                                </span>
-                               <span className="pf-prospect-last-message">
-                                 {ultimaMensagem}
-                               </span>
-                             </span>
-                           </button>
+                             </button>
+
+                             <button
+                               type="button"
+                               className="pf-prospect-mode-shortcut"
+                               onClick={() =>
+                                 modoPainel === "COMERCIAL"
+                                   ? abrirModoConversa(lead)
+                                   : abrirModoComercial(lead)
+                               }
+                               title={
+                                 modoPainel === "COMERCIAL"
+                                   ? "Abrir conversa"
+                                   : "Abrir visão comercial"
+                               }
+                             >
+                               {modoPainel === "COMERCIAL"
+                                 ? "💬 Conversa"
+                                 : "▦ Comercial"}
+                             </button>
+                           </div>
                          );
                        })}
                      </div>
                    </aside>
 
+                   <div
+                     className="pf-sidebar-resizer"
+                     role="separator"
+                     aria-label="Ajustar largura da lista de prospects"
+                     aria-orientation="vertical"
+                     aria-valuemin={260}
+                     aria-valuemax={620}
+                     aria-valuenow={larguraListaProspects}
+                   >
+                     <button
+                       type="button"
+                       onClick={() => ajustarLarguraListaProspects(260)}
+                       title="Recolher lista"
+                       aria-label="Recolher lista de prospects"
+                     >
+                       &lt;&lt;
+                     </button>
+                     <button
+                       type="button"
+                       className="pf-sidebar-drag-handle"
+                       onPointerDown={(event) => {
+                         event.preventDefault();
+                         setRedimensionandoLista(true);
+                       }}
+                       title="Arraste para ajustar a largura"
+                       aria-label="Arraste para ajustar a largura da lista"
+                     >
+                       ⋮
+                     </button>
+                     <button
+                       type="button"
+                       onClick={() => ajustarLarguraListaProspects(620)}
+                       title="Expandir lista"
+                       aria-label="Expandir lista de prospects"
+                     >
+                       &gt;&gt;
+                     </button>
+                   </div>
+
                    <div className="pf-selected-pane">
+                     <div className="pf-view-switcher">
+                       <button
+                         type="button"
+                         onClick={() => abrirModoComercial()}
+                         className={modoPainel === "COMERCIAL" ? "is-active" : ""}
+                         aria-pressed={modoPainel === "COMERCIAL"}
+                       >
+                         ▦ Comercial
+                       </button>
+                       <button
+                         type="button"
+                         onClick={() => abrirModoConversa()}
+                         className={modoPainel === "CONVERSA" ? "is-active" : ""}
+                         aria-pressed={modoPainel === "CONVERSA"}
+                       >
+                         💬 Conversa
+                       </button>
+                     </div>
+
+                     {modoPainel === "CONVERSA" && leadSelecionado ? (
+                       <section className="pf-conversation-pane">
+                         <header className="pf-conversation-header">
+                           <div className="pf-history-contact">
+                             <span className="pf-history-avatar">
+                               {iniciaisLead(leadSelecionado.nome)}
+                             </span>
+                             <div>
+                               <h2>{leadSelecionado.nome}</h2>
+                               <p>
+                                 {historico.length} interações
+                                 {leadSelecionado.telefone
+                                   ? ` · ${leadSelecionado.telefone}`
+                                   : ""}
+                               </p>
+                             </div>
+                           </div>
+                           <span className="pf-history-channel">
+                             ● {canalVisual(leadSelecionado.canal_preferido).nome}
+                           </span>
+                         </header>
+
+                         <div className="pf-conversation-messages">
+                           {carregandoConversa ? (
+                             <div className="pf-conversation-empty">
+                               Carregando conversa...
+                             </div>
+                           ) : (
+                             <>
+                               {historico.map((item) => {
+                                 const autor = interacaoVisual(item.tipo);
+                                 const enviadoPorMim = autor === "Você";
+                                 const mensagemDoLead = autor === "Lead";
+                                 const entrega = enviadoPorMim
+                                   ? statusEntregaVisual(item)
+                                   : null;
+
+                                 return (
+                                   <div
+                                     key={item.id}
+                                     className={`pf-chat-row ${
+                                       enviadoPorMim
+                                         ? "is-mine"
+                                         : mensagemDoLead
+                                           ? "is-lead"
+                                           : "is-system"
+                                     }`}
+                                   >
+                                     <div className="pf-chat-bubble">
+                                       <div className="pf-chat-meta">
+                                         <strong>
+                                           {autor}
+                                           {item.cadencia_ordem
+                                             ? ` · Mensagem ${item.cadencia_ordem}`
+                                             : ""}
+                                         </strong>
+                                         <span className="pf-chat-time">
+                                           {dataHoraBR(item.created_at)}
+                                           {entrega && (
+                                             <span
+                                               className={`pf-delivery-status ${entrega.classe}`}
+                                               title={entrega.titulo}
+                                               aria-label={entrega.titulo}
+                                             >
+                                               {entrega.simbolo}
+                                             </span>
+                                           )}
+                                         </span>
+                                       </div>
+                                       <p>{item.mensagem || "Sem observação"}</p>
+                                     </div>
+                                   </div>
+                                 );
+                               })}
+
+                               {historico.length === 0 && (
+                                 <div className="pf-conversation-empty">
+                                   Nenhuma interação registrada.
+                                 </div>
+                               )}
+                             </>
+                           )}
+                         </div>
+
+                         <footer className="pf-conversation-composer">
+                         {/*}  {["EM_CADENCIA", "AGUARDANDO_CLIENTE"].includes(
+                             leadSelecionado.status,
+                           ) && (
+                             <div className="pf-conversation-warning">
+                               Aguardando resposta do cliente. Um novo envio pedirá confirmação.
+                             </div>
+                           )}*/}
+
+                           {(leadSelecionado.nao_contatar ||
+                             leadSelecionado.status === "BLOQUEADO") && (
+                             <div className="pf-conversation-warning is-blocked">
+                               Este contato está bloqueado para novos envios.
+                             </div>
+                           )}
+
+                           <div className="pf-conversation-compose-row">
+                             <textarea
+                               value={textoConversa}
+                               onChange={(event) => setTextoConversa(event.target.value)}
+                               onKeyDown={(event) => {
+                                 if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                                   event.preventDefault();
+                                   enviarMensagemDaConversa();
+                                 }
+                               }}
+                               placeholder="Digite uma nova mensagem..."
+                               rows={1}
+                               disabled={
+                                 executando === `CONVERSA-${leadSelecionado.id}` ||
+                                 leadSelecionado.nao_contatar ||
+                                 leadSelecionado.status === "BLOQUEADO" ||
+                                 leadSelecionado.canal_preferido !== "WHATSAPP"
+                               }
+                             />
+                             <button
+                             type="button"
+                             onClick={enviarMensagemDaConversa}
+                             className="pf-conversation-send"
+                             aria-label="Enviar mensagem"
+                             title="Enviar mensagem"
+                             disabled={
+                                 !textoConversa.trim() ||
+                                 executando === `CONVERSA-${leadSelecionado.id}` ||
+                                 leadSelecionado.nao_contatar ||
+                                 leadSelecionado.status === "BLOQUEADO" ||
+                                 leadSelecionado.canal_preferido !== "WHATSAPP"
+                               }
+                             >
+                               {executando === `CONVERSA-${leadSelecionado.id}`
+                                 ? <span className="pf-send-loading">•••</span>
+                                 : (
+                                   <svg
+                                     viewBox="0 0 24 24"
+                                     aria-hidden="true"
+                                   >
+                                     <path d="M3.4 20.1 21 12 3.4 3.9l-.1 6.3 12.6 1.8-12.6 1.8.1 6.3Z" />
+                                   </svg>
+                                 )}
+                             </button>
+                           </div>
+                           <small>Ctrl + Enter também envia a mensagem.</small>
+                         </footer>
+                       </section>
+                     ) : (
+                     <>
                      {leads
                        .filter(
                          (lead) =>
@@ -1951,10 +2502,10 @@ function abrirContatoDaAgenda(tarefa) {
                              <div className="grid grid-cols-2 gap-2">
                                <button
                                  type="button"
-                                 onClick={() => abrirHistorico(lead)}
+                                 onClick={() => abrirModoConversa(lead)}
                                  className="rounded-lg px-2 py-2 text-[11px] font-black text-slate-500 hover:bg-white"
                                >
-                                  💬 Histórico
+                                  💬 Conversa
                                </button>
                                {!bloqueado && (
                                  <button
@@ -1971,6 +2522,8 @@ function abrirContatoDaAgenda(tarefa) {
                        </article>
                      );
                        })}
+                     </>
+                     )}
                    </div>
                  </section>
                )}
@@ -3068,6 +3621,72 @@ function abrirContatoDaAgenda(tarefa) {
   </div>
 )}
 
+ {qrCodeWhatsApp && (
+  <div
+    className="pf-modal-overlay"
+    onMouseDown={() => setQrCodeWhatsApp(null)}
+  >
+    <div
+      className="pf-modal pf-modal-sm"
+      onMouseDown={(evento) => evento.stopPropagation()}
+    >
+      <div className="pf-modal-titlebar">
+        <div>
+          <h2>Reconectar WhatsApp</h2>
+          <p>Escaneie o QR Code utilizando o celular.</p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setQrCodeWhatsApp(null)}
+          aria-label="Fechar"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="pf-modal-body">
+        <div className="rounded-xl bg-slate-50 p-4 text-center">
+          <p className="mb-4 text-sm text-slate-600">
+            No celular, abra o WhatsApp, acesse{" "}
+            <strong>Aparelhos conectados</strong> e escolha{" "}
+            <strong>Conectar um aparelho</strong>.
+          </p>
+
+          <img
+            src={qrCodeWhatsApp}
+            alt="QR Code para reconectar o WhatsApp"
+            style={{
+              display: "block",
+              width: "280px",
+              height: "280px",
+              maxWidth: "100%",
+              margin: "0 auto",
+              borderRadius: "12px",
+              background: "#ffffff",
+              padding: "8px",
+            }}
+          />
+
+          <p className="mt-4 text-xs text-slate-500">
+            O QR Code expira em pouco tempo. Caso expire, feche esta janela e
+            gere um novo.
+          </p>
+        </div>
+      </div>
+
+      <div className="pf-modal-footer">
+        <button
+          type="button"
+          onClick={() => setQrCodeWhatsApp(null)}
+        >
+          Fechar
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
        {modalHistorico && leadHistorico && (
          <div className="pf-modal-overlay">
            <div className="pf-modal pf-modal-history">
@@ -3107,6 +3726,9 @@ function abrirContatoDaAgenda(tarefa) {
                  const autor = interacaoVisual(item.tipo);
                  const enviadoPorMim = autor === "Você";
                  const mensagemDoLead = autor === "Lead";
+                 const entrega = enviadoPorMim
+                   ? statusEntregaVisual(item)
+                   : null;
 
                  return (
                    <div
@@ -3127,7 +3749,18 @@ function abrirContatoDaAgenda(tarefa) {
                              ? ` · Mensagem ${item.cadencia_ordem}`
                              : ""}
                          </strong>
-                         <span>{dataHoraBR(item.created_at)}</span>
+                         <span className="pf-chat-time">
+                           {dataHoraBR(item.created_at)}
+                           {entrega && (
+                             <span
+                               className={`pf-delivery-status ${entrega.classe}`}
+                               title={entrega.titulo}
+                               aria-label={entrega.titulo}
+                             >
+                               {entrega.simbolo}
+                             </span>
+                           )}
+                         </span>
                        </div>
                        <p>{item.mensagem || "Sem observação"}</p>
                      </div>
@@ -3355,20 +3988,28 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-empty-state > div:last-child button { border: 0; border-radius: 8px; padding: 10px 15px; background: #2563eb; color: #fff; font-size: 12px; font-weight: 800; }
  
          .pf-commercial-workspace {
-           display: grid; grid-template-columns: 310px minmax(0,1fr); min-height: 535px;
+           display: grid; grid-template-columns: var(--pf-prospect-width, 330px) 28px minmax(0,1fr); min-height: 535px;
            overflow: hidden; border: 1px solid #dbe2ea; border-radius: 11px;
            background: #fff; box-shadow: 0 5px 18px rgba(15,23,42,.06);
          }
+         .pf-commercial-workspace.is-resizing { cursor: col-resize; }
          .pf-prospect-sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid #dbe2ea; background: #f8fafc; }
+         .pf-sidebar-resizer { display: flex; width: 28px; min-width: 28px; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-right: 1px solid #dbe2ea; background: #eef2f7; }
+         .pf-sidebar-resizer button { display: flex; width: 22px; min-height: 25px; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 5px; padding: 0; background: #fff; color: #475569; font-size: 9px; font-weight: 900; line-height: 1; cursor: pointer; }
+         .pf-sidebar-resizer button:hover { border-color: #00a884; color: #00856a; }
+         .pf-sidebar-resizer .pf-sidebar-drag-handle { min-height: 46px; color: #64748b; font-size: 22px; cursor: col-resize; touch-action: none; }
          .pf-prospect-sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 14px; border-bottom: 1px solid #dbe2ea; background: #fff; }
          .pf-prospect-sidebar-header > div { display: flex; min-width: 0; flex-direction: column; }
          .pf-prospect-sidebar-header strong { color: #0f172a; font-size: 13px; font-weight: 900; }
          .pf-prospect-sidebar-header span:not(.pf-prospect-total) { margin-top: 2px; color: #94a3b8; font-size: 9px; font-weight: 700; }
          .pf-prospect-total { display: inline-flex; min-width: 25px; height: 25px; align-items: center; justify-content: center; border-radius: 999px; padding: 0 7px; background: #dbeafe; color: #1d4ed8; font-size: 10px; font-weight: 900; }
          .pf-prospect-list { flex: 1; max-height: 610px; overflow-y: auto; padding: 5px; }
-         .pf-prospect-item { display: grid; width: 100%; grid-template-columns: 36px minmax(0,1fr); gap: 9px; align-items: center; border: 0; border-bottom: 1px solid #e2e8f0; border-radius: 7px; padding: 9px 8px; background: transparent; color: #334155; text-align: left; transition: background .15s ease, box-shadow .15s ease; }
+         .pf-prospect-item { display: flex; width: 100%; align-items: center; gap: 5px; border: 0; border-bottom: 1px solid #e2e8f0; border-radius: 7px; padding: 4px; background: transparent; color: #334155; text-align: left; transition: background .15s ease, box-shadow .15s ease; }
          .pf-prospect-item:hover { background: #eef4fb; }
          .pf-prospect-item.is-active { background: #e8f1ff; box-shadow: inset 3px 0 #2563eb; }
+         .pf-prospect-select { display: grid; min-width: 0; flex: 1; grid-template-columns: 36px minmax(0,1fr); gap: 9px; align-items: center; border: 0; padding: 5px 4px; background: transparent; color: inherit; text-align: left; }
+         .pf-prospect-mode-shortcut { flex: 0 0 auto; border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 6px; background: #fff; color: #475569; font-size: 8px; font-weight: 900; white-space: nowrap; }
+         .pf-prospect-mode-shortcut:hover { border-color: #00a884; color: #00856a; }
          .pf-prospect-avatar { display: inline-flex; width: 36px; height: 36px; align-items: center; justify-content: center; border-radius: 50%; background: #153b67; color: #fff; font-size: 9px; font-weight: 900; }
          .pf-prospect-item.is-active .pf-prospect-avatar { background: #2563eb; }
          .pf-prospect-copy { display: block; min-width: 0; }
@@ -3380,6 +4021,10 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-prospect-company { margin-top: 2px; color: #64748b; font-size: 9px; font-weight: 700; }
          .pf-prospect-last-message { margin-top: 4px; color: #94a3b8; font-size: 9px; }
          .pf-selected-pane { min-width: 0; overflow-y: auto; padding: 10px; background: #f4f7fb; }
+         .pf-view-switcher { display: inline-flex; gap: 3px; margin-bottom: 9px; padding: 3px; border: 1px solid #dbe2ea; border-radius: 8px; background: #fff; }
+         .pf-view-switcher button { border: 0; border-radius: 6px; padding: 7px 12px; background: transparent; color: #64748b; font-size: 10px; font-weight: 900; }
+         .pf-view-switcher button:hover { background: #f1f5f9; color: #0f172a; }
+         .pf-view-switcher button.is-active { background: #0f172a; color: #fff; }
          .pf-selected-pane .pf-lead-card { min-height: 100%; }
          .pf-selected-pane .pf-lead-card > div { grid-template-columns: minmax(220px,.72fr) minmax(300px,1.28fr); }
          .pf-selected-pane .pf-lead-actions { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; padding: 10px 0 0; border-top: 1px solid #e2e8f0; border-left: 0; }
@@ -3434,6 +4079,25 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-next-task small { color: #667781; font-size: 9px; }
          .pf-next-task > div:last-child { display: flex; gap: 5px; }
          .pf-next-task button { border: 1px solid #b7dcd4; border-radius: 6px; padding: 5px 7px; background: #fff; color: #087d69; font-size: 9px; font-weight: 900; white-space: nowrap; }
+
+         .pf-conversation-pane { display: flex; min-height: 490px; overflow: hidden; flex-direction: column; border: 1px solid #dbe2ea; border-radius: 10px; background: #efeae2; box-shadow: 0 1px 4px rgba(15,23,42,.05); }
+         .pf-conversation-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #dbe2ea; background: #fff; }
+         .pf-conversation-header h2 { margin: 0; color: #0f172a; font-size: 14px; font-weight: 900; }
+         .pf-conversation-header p { margin: 3px 0 0; color: #64748b; font-size: 9px; }
+         .pf-conversation-messages { display: flex; min-height: 330px; max-height: 520px; flex: 1; flex-direction: column; gap: 8px; overflow-y: auto; padding: 14px 16px; }
+         .pf-conversation-empty { margin: auto; color: #8696a0; font-size: 11px; font-weight: 800; text-align: center; }
+         .pf-conversation-composer { padding: 8px 10px; border-top: 1px solid #dbe2ea; background: #f0f2f5; }
+         .pf-conversation-warning { margin-bottom: 7px; border: 1px solid #fde68a; border-radius: 7px; padding: 7px 9px; background: #fffbeb; color: #92400e; font-size: 9px; font-weight: 800; }
+         .pf-conversation-warning.is-blocked { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+         .pf-conversation-compose-row { display: flex; align-items: flex-end; gap: 8px; }
+         .pf-conversation-compose-row textarea { field-sizing: content; width: 100%; min-height: 44px; max-height: 112px; resize: none; overflow-y: auto; border: 1px solid #dbe2ea; border-radius: 24px; padding: 11px 17px; background: #fff; color: #0f172a; font-size: 12px; line-height: 20px; outline: none; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+         .pf-conversation-compose-row textarea:focus { border-color: #9adfd1; box-shadow: 0 0 0 2px rgba(0,168,132,.11); }
+         .pf-conversation-compose-row .pf-conversation-send { display: inline-flex; width: 44px; min-width: 44px; height: 44px; align-items: center; justify-content: center; flex: 0 0 44px; border: 0; border-radius: 999px; padding: 0; background: #00a884; color: #fff; box-shadow: 0 2px 5px rgba(0,95,76,.2); }
+         .pf-conversation-compose-row .pf-conversation-send:hover { background: #008f72; }
+         .pf-conversation-compose-row .pf-conversation-send:disabled { cursor: not-allowed; background: #aebac1; box-shadow: none; opacity: .72; }
+         .pf-conversation-send svg { width: 21px; height: 21px; fill: currentColor; transform: translateX(1px); }
+         .pf-send-loading { font-size: 11px; font-weight: 900; letter-spacing: 1px; }
+         .pf-conversation-composer > small { display: block; margin-top: 5px; color: #94a3b8; font-size: 8px; text-align: right; }
 
          .pf-agenda-page { overflow: hidden; border: 1px solid #dbe2ea; border-radius: 10px; background: #f7f9fa; }
          .pf-agenda-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid #e3e8eb; background: #fff; }
@@ -3569,6 +4233,10 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-chat-row.is-mine .pf-chat-meta strong { color: #1d4ed8; }
          .pf-chat-row.is-system .pf-chat-meta strong { color: #64748b; }
          .pf-chat-meta span { flex: 0 0 auto; color: #94a3b8; font-size: 8px; font-weight: 700; }
+         .pf-chat-meta .pf-chat-time { display: inline-flex; align-items: center; gap: 4px; }
+         .pf-chat-meta .pf-delivery-status { color: #8696a0; font-size: 12px; font-weight: 900; letter-spacing: -3px; line-height: 1; }
+         .pf-chat-meta .pf-delivery-status.is-read { color: #53bdeb; }
+         .pf-chat-meta .pf-delivery-status.is-error { color: #ef4444; letter-spacing: 0; }
          .pf-chat-bubble p { margin: 5px 0 0; white-space: pre-wrap; color: #334155; font-size: 11px; line-height: 1.45; }
          .pf-chat-row.is-system .pf-chat-bubble p { margin-top: 2px; font-size: 9px; text-align: center; }
          .pf-open-channel-button { width: 100%; border-color: #93c5fd !important; background: #2563eb !important; color: #fff !important; }
@@ -3677,7 +4345,7 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-filter-button.is-unread.is-active:hover { background: var(--wa-green-strong); }
 
          .pf-commercial-workspace {
-           grid-template-columns: 330px minmax(0,1fr);
+           grid-template-columns: var(--pf-prospect-width, 330px) 28px minmax(0,1fr);
            min-height: 610px;
            border-color: var(--wa-border);
            border-radius: 9px;
@@ -3880,6 +4548,8 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-page.is-dark .pf-prospect-item { border-bottom-color: #202c33; color: #d1d7db; }
          .pf-page.is-dark .pf-prospect-item:hover { background: #202c33; }
          .pf-page.is-dark .pf-prospect-item.is-active { background: #2a3942; box-shadow: inset 3px 0 #00a884; }
+         .pf-page.is-dark .pf-prospect-mode-shortcut { border-color: #3b4a54; background: #202c33; color: #aebac1; }
+         .pf-page.is-dark .pf-prospect-mode-shortcut:hover { border-color: #00a884; color: #53d6ba; }
          .pf-page.is-dark .pf-prospect-name-row strong { color: #e9edef; }
          .pf-page.is-dark .pf-prospect-company,
          .pf-page.is-dark .pf-prospect-last-message { color: #8696a0; }
@@ -3899,6 +4569,19 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-page.is-dark .pf-conversation-title { background: #182229; color: #8696a0; }
          .pf-page.is-dark .pf-conversation-subtitle { color: #667781; }
          .pf-page.is-dark .pf-last-message { color: #e9edef; }
+         .pf-page.is-dark .pf-view-switcher { border-color: #2a3942; background: #111b21; }
+         .pf-page.is-dark .pf-view-switcher button { color: #8696a0; }
+         .pf-page.is-dark .pf-view-switcher button:hover { background: #202c33; color: #e9edef; }
+         .pf-page.is-dark .pf-view-switcher button.is-active { background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-conversation-pane { border-color: #2a3942; background: #0b141a; }
+         .pf-page.is-dark .pf-conversation-header { border-bottom-color: #2a3942; background: #111b21; }
+         .pf-page.is-dark .pf-conversation-header h2 { color: #e9edef; }
+         .pf-page.is-dark .pf-conversation-header p { color: #8696a0; }
+         .pf-page.is-dark .pf-conversation-composer { border-top-color: #2a3942; background: #202c33; }
+         .pf-page.is-dark .pf-conversation-compose-row textarea { border-color: #3b4a54; background: #111b21; color: #e9edef; }
+         .pf-page.is-dark .pf-conversation-compose-row textarea::placeholder { color: #667781; }
+         .pf-page.is-dark .pf-conversation-warning { border-color: #8a6d1d; background: #332b12; color: #f5d77a; }
+         .pf-page.is-dark .pf-conversation-warning.is-blocked { border-color: #7f1d1d; background: #351515; color: #fca5a5; }
          .pf-page.is-dark .pf-selected-pane .pf-lead-actions { border-top-color: #2a3942; background: rgba(32,44,51,.97); }
          .pf-page.is-dark .pf-lead-actions button { border-color: #3b4a54; background: #202c33; color: #d1d7db; }
          .pf-page.is-dark .pf-lead-actions > button:first-child,
@@ -3944,9 +4627,12 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-page.is-dark .pf-history-list { background-color: #0b141a; }
          .pf-page.is-dark .pf-chat-bubble p { color: #e9edef; }
          .pf-page.is-dark .pf-chat-row.is-system .pf-chat-bubble { background: #182229; color: #8696a0; }
+         .pf-page.is-dark .pf-sidebar-resizer { border-color: #3b4a54; background: #202c33; }
+         .pf-page.is-dark .pf-sidebar-resizer button { border-color: #3b4a54; background: #111b21; color: #aebac1; }
+         .pf-page.is-dark .pf-sidebar-resizer button:hover { border-color: #00a884; color: #00cfa5; }
 
          @media (max-width: 1100px) {
-           .pf-commercial-workspace { grid-template-columns: 270px minmax(0,1fr); }
+           .pf-commercial-workspace { grid-template-columns: min(var(--pf-prospect-width, 330px), 42vw) 28px minmax(0,1fr); }
            .pf-selected-pane .pf-lead-card > div { grid-template-columns: 1fr; }
            .pf-selected-pane .pf-lead-actions { grid-column: auto; }
            .pf-lead-card > div { grid-template-columns: minmax(220px,.8fr) minmax(320px,1.2fr); }
@@ -3966,6 +4652,7 @@ function abrirContatoDaAgenda(tarefa) {
            .pf-search-row { width: 100%; }
            .pf-commercial-stage-filter { min-width: 150px; }
            .pf-commercial-workspace { grid-template-columns: 1fr; min-height: 0; }
+           .pf-sidebar-resizer { display: none; }
            .pf-prospect-sidebar { border-right: 0; border-bottom: 1px solid #dbe2ea; }
            .pf-prospect-list { max-height: 260px; }
            .pf-selected-pane { overflow: visible; }
@@ -3984,6 +4671,9 @@ function abrirContatoDaAgenda(tarefa) {
            .pf-history-channel { display: none; }
            .pf-history-list { min-height: 390px; padding: 11px; }
            .pf-chat-bubble { max-width: 90%; }
+           .pf-conversation-pane { min-height: 440px; }
+           .pf-conversation-messages { min-height: 280px; max-height: 460px; padding: 11px; }
+           .pf-conversation-compose-row { display: flex; }
            .pf-agenda-toolbar { align-items: stretch; flex-direction: column; }
            .pf-agenda-toolbar > input { width: 100%; }
            .pf-task-card { grid-template-columns: auto minmax(0,1fr); }
@@ -3998,6 +4688,9 @@ function abrirContatoDaAgenda(tarefa) {
            .pf-tabs { width: 100%; }
            .pf-tab { flex: 1; justify-content: center; }
            .pf-empty-state > div:nth-child(2):not(:last-child) { grid-template-columns: 1fr; }
+           .pf-prospect-mode-shortcut { padding: 5px; font-size: 0; }
+           .pf-prospect-mode-shortcut::first-letter { font-size: 11px; }
+           .pf-view-switcher { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
            .pf-modal-overlay { padding: 9px; }
          }
 
@@ -4102,7 +4795,7 @@ function abrirContatoDaAgenda(tarefa) {
   min-width: 16px !important;
   height: 16px !important;
   padding: 0 4px !important;
-  font-size: 8px !important;
+  font-size: 10px !important;
   line-height: 16px !important;
 }
 
@@ -4118,13 +4811,13 @@ function abrirContatoDaAgenda(tarefa) {
 }
 
 .pf-page .pf-commercial-stage-filter span {
-  font-size: 7px !important;
+  font-size: 8px !important;
 }
 
 .pf-page .pf-commercial-stage-filter select {
   height: 30px !important;
   padding: 10px 25px 2px 8px !important;
-  font-size: 10px !important;
+  font-size: 12px !important;
   border-radius: 6px !important;
 }
 
@@ -4134,7 +4827,7 @@ function abrirContatoDaAgenda(tarefa) {
   min-height: 30px !important;
   padding: 4px 9px 4px 30px !important;
   border-radius: 6px !important;
-  font-size: 10px !important;
+  font-size: 12px !important;
 }
 
 /* Botão Atualizar */
@@ -4143,7 +4836,7 @@ function abrirContatoDaAgenda(tarefa) {
   min-height: 30px !important;
   padding: 4px 9px !important;
   border-radius: 6px !important;
-  font-size: 10px !important;
+  font-size: 12px !important;
   line-height: 1 !important;
   white-space: nowrap;
 }
@@ -4163,7 +4856,7 @@ function abrirContatoDaAgenda(tarefa) {
   padding: 4px 10px !important;
   gap: 6px !important;
   border-radius: 6px !important;
-  font-size: 10px !important;
+  font-size: 12px !important;
   line-height: 1 !important;
   white-space: nowrap;
 }
@@ -4178,7 +4871,7 @@ function abrirContatoDaAgenda(tarefa) {
   min-width: 16px !important;
   height: 16px !important;
   padding: 0 4px !important;
-  font-size: 8px !important;
+  font-size: 12px !important;
   line-height: 16px !important;
 }
 
@@ -4188,7 +4881,7 @@ function abrirContatoDaAgenda(tarefa) {
   height: 31px !important;
   padding: 4px 10px !important;
   border-radius: 7px !important;
-  font-size: 10px !important;
+  font-size: 12px !important;
   line-height: 1 !important;
   font-weight: 700 !important;
   white-space: nowrap;
@@ -4205,7 +4898,7 @@ function abrirContatoDaAgenda(tarefa) {
   min-height: 31px !important;
   height: 31px !important;
   padding: 4px 10px !important;
-  font-size: 10px !important;
+  font-size: 12px !important;
   border-radius: 7px !important;
 }
 
