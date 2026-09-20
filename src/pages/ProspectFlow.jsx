@@ -1,4 +1,4 @@
-        import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+         import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  import { buildWebhookUrl } from "../config/globals";
  
  /*
@@ -66,6 +66,11 @@ const tarefaVazia = {
   tipo: "COBRAR_RESPOSTA",
   descricao: "",
   agendada_para: "",
+  titulo: "",
+  participante_email: "",
+  duracao_minutos: 30,
+  plataforma: "GOOGLE_MEET",
+  link_reuniao: "",
 };
 
 const filtrosAgenda = [
@@ -83,6 +88,7 @@ const nomesTarefa = {
   ENVIAR_PROPOSTA: "Enviar proposta",
   COBRAR_RESPOSTA: "Cobrar resposta",
   VISITAR: "Visitar",
+  REUNIAO: "Reunião",
   OUTRO: "Outra ação",
 };
  
@@ -94,7 +100,7 @@ const EMPRESA_PROSPECTFLOW_ID = Number(
 );
 
 // Polling leve para manter a central atualizada sem recarregar ou piscar a tela.
-const ATUALIZACAO_AUTOMATICA_MS = 5 * 60_000;
+const ATUALIZACAO_AUTOMATICA_MS = 100*60_000;
 // A conversa precisa atualizar mais rápido que o restante da tela.
 // A consulta é silenciosa e não causa o efeito de recarregar/piscar.
 const ATUALIZACAO_CONVERSA_MS = 10_000;
@@ -320,6 +326,8 @@ function statusEntregaVisual(interacao) {
    const [mensagens, setMensagens] = useState([]);
    const [rascunhos, setRascunhos] = useState({});
    const [carregando, setCarregando] = useState(false);
+   const [primeiraCargaConcluida, setPrimeiraCargaConcluida] =
+  useState(false);
    const [executando, setExecutando] = useState(null);
    const [erro, setErro] = useState("");
  
@@ -627,8 +635,12 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
          setLeads([]);
        }
      } finally {
-       if (!silencioso) setCarregando(false);
-     }
+  setPrimeiraCargaConcluida(true);
+
+  if (!silencioso) {
+    setCarregando(false);
+  }
+}
    }, [busca, chamarApi, etapaFiltro, filtro]);
  
    const carregarMensagens = useCallback(async () => {
@@ -1328,6 +1340,8 @@ function agendamentoInicial() {
        ...tarefaVazia,
        lead,
        agendada_para: agendamentoInicial(),
+       titulo: `Reunião com ${lead.empresa_nome || lead.nome}`,
+       participante_email: lead.email || "",
      });
      setModalTarefa(true);
    }
@@ -1338,6 +1352,26 @@ function agendamentoInicial() {
        return;
      }
 
+     if (formTarefa.tipo === "REUNIAO") {
+       if (!formTarefa.titulo.trim()) {
+         alert("Informe o título da reunião.");
+         return;
+       }
+
+       if (!formTarefa.participante_email.trim()) {
+         alert("Informe o e-mail do participante.");
+         return;
+       }
+
+       if (
+         formTarefa.plataforma !== "PRESENCIAL" &&
+         !formTarefa.link_reuniao.trim()
+       ) {
+         alert("Informe o link da reunião.");
+         return;
+       }
+     }
+
      try {
        setExecutando("SALVAR_TAREFA");
        await chamarApi("SALVAR_TAREFA", {
@@ -1345,6 +1379,23 @@ function agendamentoInicial() {
          tipo: formTarefa.tipo,
          descricao: formTarefa.descricao.trim(),
          agendada_para: new Date(formTarefa.agendada_para).toISOString(),
+         titulo:
+           formTarefa.tipo === "REUNIAO" ? formTarefa.titulo.trim() : null,
+         participante_email:
+           formTarefa.tipo === "REUNIAO"
+             ? formTarefa.participante_email.trim()
+             : null,
+         duracao_minutos:
+           formTarefa.tipo === "REUNIAO"
+             ? Number(formTarefa.duracao_minutos)
+             : null,
+         plataforma:
+           formTarefa.tipo === "REUNIAO" ? formTarefa.plataforma : null,
+         link_reuniao:
+           formTarefa.tipo === "REUNIAO" &&
+           formTarefa.plataforma !== "PRESENCIAL"
+             ? formTarefa.link_reuniao.trim()
+             : null,
        });
        setModalTarefa(false);
        setFormTarefa(tarefaVazia);
@@ -1814,10 +1865,16 @@ function abrirContatoDaAgenda(tarefa) {
 
       </div>
     </section>
+
+    {carregando && primeiraCargaConcluida && (
+  <div className="pf-updating-line">
+    <span />
+  </div>
+)}
  
-               {carregando ? (
-                 <div className="pf-loading">Carregando...</div>
-               ) : leads.length === 0 ? (
+                {!primeiraCargaConcluida ? (
+  <div className="pf-loading">Carregando...</div>
+) : leads.length === 0 ? (
                  <div className="pf-empty-state">
                    <div className="bg-gradient-to-r from-sky-50 to-blue-50 px-6 py-7 text-center">
                      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-2xl shadow-sm ring-1 ring-sky-100">
@@ -1971,44 +2028,44 @@ function abrirContatoDaAgenda(tarefa) {
                      </div>
                    </aside>
 
-                   <div
-                     className="pf-sidebar-resizer"
-                     role="separator"
-                     aria-label="Ajustar largura da lista de prospects"
-                     aria-orientation="vertical"
-                     aria-valuemin={260}
-                     aria-valuemax={620}
-                     aria-valuenow={larguraListaProspects}
-                   >
-                     <button
-                       type="button"
-                       onClick={() => ajustarLarguraListaProspects(260)}
-                       title="Recolher lista"
-                       aria-label="Recolher lista de prospects"
-                     >
-                       &lt;&lt;
-                     </button>
-                     <button
-                       type="button"
-                       className="pf-sidebar-drag-handle"
-                       onPointerDown={(event) => {
-                         event.preventDefault();
-                         setRedimensionandoLista(true);
-                       }}
-                       title="Arraste para ajustar a largura"
-                       aria-label="Arraste para ajustar a largura da lista"
-                     >
-                       ⋮
-                     </button>
-                     <button
-                       type="button"
-                       onClick={() => ajustarLarguraListaProspects(620)}
-                       title="Expandir lista"
-                       aria-label="Expandir lista de prospects"
-                     >
-                       &gt;&gt;
-                     </button>
-                   </div>
+                      <div
+                          className="pf-sidebar-resizer"
+                          role="separator"
+                          aria-label="Ajustar largura da lista de prospects"
+                          aria-orientation="vertical"
+                          aria-valuemin={260}
+                          aria-valuemax={620}
+                          aria-valuenow={larguraListaProspects}
+                        >
+                          <button
+                            type="button"
+                            className="pf-sidebar-toggle"
+                            onClick={() =>
+                              ajustarLarguraListaProspects(
+                                larguraListaProspects <= 260 ? 620 : 260
+                              )
+                            }
+                            title={
+                              larguraListaProspects <= 260
+                                ? "Expandir lista"
+                                : "Recolher lista"
+                            }
+                          >
+                            {larguraListaProspects <= 260 ? ">" : "<"}
+                          </button>
+
+                          <button
+                            type="button"
+                            className="pf-sidebar-drag-handle"
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              setRedimensionandoLista(true);
+                            }}
+                            title="Arraste para ajustar a largura"
+                          >
+                            ⋮
+                          </button>
+                        </div>
 
                    <div className="pf-selected-pane">
                      <div className="pf-view-switcher">
@@ -2744,7 +2801,11 @@ function abrirContatoDaAgenda(tarefa) {
            <div className="pf-modal pf-modal-sm">
              <div className="pf-modal-titlebar pf-task-modal-titlebar">
                <div>
-                 <h2>Agendar próxima ação</h2>
+                 <h2>
+                   {formTarefa.tipo === "REUNIAO"
+                     ? "Agendar reunião"
+                     : "Agendar próxima ação"}
+                 </h2>
                  <p>{formTarefa.lead.empresa_nome || formTarefa.lead.nome}</p>
                </div>
                <button type="button" onClick={() => setModalTarefa(false)}>✕</button>
@@ -2764,6 +2825,7 @@ function abrirContatoDaAgenda(tarefa) {
                    <option value="ENVIAR_PROPOSTA">Enviar proposta</option>
                    <option value="COBRAR_RESPOSTA">Cobrar resposta</option>
                    <option value="VISITAR">Visitar</option>
+                   <option value="REUNIAO">Reunião</option>
                    <option value="OUTRO">Outra ação</option>
                  </select>
                </label>
@@ -2781,6 +2843,98 @@ function abrirContatoDaAgenda(tarefa) {
                    }
                  />
                </label>
+
+               {formTarefa.tipo === "REUNIAO" && (
+                 <>
+                   <label>
+                     <span>Título da reunião</span>
+                     <input
+                       type="text"
+                       value={formTarefa.titulo}
+                       onChange={(event) =>
+                         setFormTarefa((atual) => ({
+                           ...atual,
+                           titulo: event.target.value,
+                         }))
+                       }
+                       placeholder="Ex.: Apresentação do FinanceFlow"
+                     />
+                   </label>
+
+                   <label>
+                     <span>E-mail do participante</span>
+                     <input
+                       type="email"
+                       value={formTarefa.participante_email}
+                       onChange={(event) =>
+                         setFormTarefa((atual) => ({
+                           ...atual,
+                           participante_email: event.target.value,
+                         }))
+                       }
+                       placeholder="cliente@empresa.com.br"
+                     />
+                   </label>
+
+                   <label>
+                     <span>Duração</span>
+                     <select
+                       value={formTarefa.duracao_minutos}
+                       onChange={(event) =>
+                         setFormTarefa((atual) => ({
+                           ...atual,
+                           duracao_minutos: Number(event.target.value),
+                         }))
+                       }
+                     >
+                       <option value={15}>15 minutos</option>
+                       <option value={30}>30 minutos</option>
+                       <option value={45}>45 minutos</option>
+                       <option value={60}>1 hora</option>
+                       <option value={90}>1 hora e 30 minutos</option>
+                     </select>
+                   </label>
+
+                   <label>
+                     <span>Como será realizada?</span>
+                     <select
+                       value={formTarefa.plataforma}
+                       onChange={(event) =>
+                         setFormTarefa((atual) => ({
+                           ...atual,
+                           plataforma: event.target.value,
+                           link_reuniao:
+                             event.target.value === "PRESENCIAL"
+                               ? ""
+                               : atual.link_reuniao,
+                         }))
+                       }
+                     >
+                       <option value="GOOGLE_MEET">Google Meet</option>
+                       <option value="MICROSOFT_TEAMS">Microsoft Teams</option>
+                       <option value="OUTRO">Outro link</option>
+                       <option value="PRESENCIAL">Presencial</option>
+                     </select>
+                   </label>
+
+                   {formTarefa.plataforma !== "PRESENCIAL" && (
+                     <label>
+                       <span>Link da reunião</span>
+                       <input
+                         type="url"
+                         value={formTarefa.link_reuniao}
+                         onChange={(event) =>
+                           setFormTarefa((atual) => ({
+                             ...atual,
+                             link_reuniao: event.target.value,
+                           }))
+                         }
+                         placeholder="Cole aqui o link do Meet ou Teams"
+                       />
+                     </label>
+                   )}
+                 </>
+               )}
 
                <label>
                  <span>Observação</span>
@@ -2807,7 +2961,11 @@ function abrirContatoDaAgenda(tarefa) {
                  onClick={salvarTarefa}
                  disabled={executando === "SALVAR_TAREFA"}
                >
-                 {executando === "SALVAR_TAREFA" ? "Salvando..." : "Agendar ação"}
+                 {executando === "SALVAR_TAREFA"
+                   ? "Salvando..."
+                   : formTarefa.tipo === "REUNIAO"
+                     ? "Agendar reunião"
+                     : "Agendar ação"}
                </button>
              </div>
            </div>
@@ -3988,16 +4146,63 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-empty-state > div:last-child button { border: 0; border-radius: 8px; padding: 10px 15px; background: #2563eb; color: #fff; font-size: 12px; font-weight: 800; }
  
          .pf-commercial-workspace {
-           display: grid; grid-template-columns: var(--pf-prospect-width, 330px) 28px minmax(0,1fr); min-height: 535px;
+           display: grid; grid-template-columns: var(--pf-prospect-width, 330px) 18px minmax(0,1fr); min-height: 535px;
            overflow: hidden; border: 1px solid #dbe2ea; border-radius: 11px;
            background: #fff; box-shadow: 0 5px 18px rgba(15,23,42,.06);
          }
          .pf-commercial-workspace.is-resizing { cursor: col-resize; }
          .pf-prospect-sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid #dbe2ea; background: #f8fafc; }
-         .pf-sidebar-resizer { display: flex; width: 28px; min-width: 28px; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-right: 1px solid #dbe2ea; background: #eef2f7; }
-         .pf-sidebar-resizer button { display: flex; width: 22px; min-height: 25px; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 5px; padding: 0; background: #fff; color: #475569; font-size: 9px; font-weight: 900; line-height: 1; cursor: pointer; }
-         .pf-sidebar-resizer button:hover { border-color: #00a884; color: #00856a; }
-         .pf-sidebar-resizer .pf-sidebar-drag-handle { min-height: 46px; color: #64748b; font-size: 22px; cursor: col-resize; touch-action: none; }
+         
+         .pf-sidebar-resizer {
+          display: flex;
+          width: 18px;
+          min-width: 18px;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          border-right: 1px solid #dbe2ea;
+          background: #eef2f7;
+        }
+
+        .pf-sidebar-resizer button {
+          display: flex;
+          width: 15px;
+          min-height: 24px;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          border-radius: 3px;
+          padding: 0;
+          background: transparent;
+          color: #475569;
+          font-size: 13px;
+          font-weight: 900;
+          line-height: 1;
+          cursor: pointer;
+        }
+
+          .pf-sidebar-resizer button:hover {
+            background: rgba(0, 168, 132, 0.12);
+            color: #00a884;
+          }
+
+          .pf-sidebar-resizer .pf-sidebar-drag-handle {
+            min-height: 42px;
+            color: #64748b;
+            font-size: 20px;
+            cursor: col-resize;
+            touch-action: none;
+          }
+                  
+         
+         
+         
+         
+         
+         
+         
+         
          .pf-prospect-sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 14px; border-bottom: 1px solid #dbe2ea; background: #fff; }
          .pf-prospect-sidebar-header > div { display: flex; min-width: 0; flex-direction: column; }
          .pf-prospect-sidebar-header strong { color: #0f172a; font-size: 13px; font-weight: 900; }
@@ -4345,7 +4550,7 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-filter-button.is-unread.is-active:hover { background: var(--wa-green-strong); }
 
          .pf-commercial-workspace {
-           grid-template-columns: var(--pf-prospect-width, 330px) 28px minmax(0,1fr);
+           grid-template-columns: var(--pf-prospect-width, 330px) 18px minmax(0,1fr);
            min-height: 610px;
            border-color: var(--wa-border);
            border-radius: 9px;
@@ -4632,7 +4837,7 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-page.is-dark .pf-sidebar-resizer button:hover { border-color: #00a884; color: #00cfa5; }
 
          @media (max-width: 1100px) {
-           .pf-commercial-workspace { grid-template-columns: min(var(--pf-prospect-width, 330px), 42vw) 28px minmax(0,1fr); }
+           .pf-commercial-workspace { grid-template-columns: min(var(--pf-prospect-width, 330px), 42vw) 18px minmax(0,1fr); }
            .pf-selected-pane .pf-lead-card > div { grid-template-columns: 1fr; }
            .pf-selected-pane .pf-lead-actions { grid-column: auto; }
            .pf-lead-card > div { grid-template-columns: minmax(220px,.8fr) minmax(320px,1.2fr); }
@@ -5135,10 +5340,41 @@ function abrirContatoDaAgenda(tarefa) {
   color: #aebac1 !important;
 }
 
+.pf-updating-line {
+  position: relative;
+  height: 3px;
+  margin: 0 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0, 168, 132, 0.12);
+}
+
+.pf-updating-line span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  border-radius: 999px;
+  background: #00a884;
+  animation: pf-loading-move 0.8s ease-in-out infinite;
+}
+
+@keyframes pf-loading-move {
+  from {
+    left: -35%;
+  }
+
+  to {
+    left: 100%;
+  }
+}
+
        `}</style>
      </div>
    );
  }
+
+ 
  
  function Campo({ label, children }) {
    return (
