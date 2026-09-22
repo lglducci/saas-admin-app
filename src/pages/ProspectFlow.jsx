@@ -1,4 +1,4 @@
-         import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+             import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  import { buildWebhookUrl } from "../config/globals";
  
  /*
@@ -91,6 +91,21 @@ const nomesTarefa = {
   REUNIAO: "Reunião",
   OUTRO: "Outra ação",
 };
+
+const resultadosLigacao = {
+  PENDENTE: { nome: "Não", classe: "is-pending" },
+  ATENDEU: { nome: "Sim", classe: "is-success" },
+  SEM_SUCESSO: { nome: "Negativo", classe: "is-negative" },
+  RETORNAR: { nome: "Retornar", classe: "is-return" },
+  CANCELADA: { nome: "Cancelada", classe: "is-cancelled" },
+};
+
+const formLigacaoVazio = {
+  ligacao: null,
+  resultado: "SEM_SUCESSO",
+  observacao: "Não atendeu",
+  retornar_em: "",
+};
  
  // O SaaS Admin é uma aplicação administrativa e não mantém empresa_id no
  // localStorage. Para o MVP, a empresa do ProspectFlow pode ser configurada no
@@ -149,9 +164,41 @@ const ATUALIZACAO_CONVERSA_MS = 10_000;
  }
  
 function dataHoraBR(valor) {
-   if (!valor) return "-";
-   return new Date(valor).toLocaleString("pt-BR");
- }
+  if (!valor) return "-";
+  return new Date(valor).toLocaleString("pt-BR");
+}
+
+function horaBR(valor) {
+  if (!valor) return "-";
+  return new Date(valor).toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function dataLocalISO(data = new Date()) {
+  const local = new Date(data.getTime() - data.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 10);
+}
+
+function numeroBR(valor, casas = 0) {
+  return Number(valor || 0).toLocaleString("pt-BR", {
+    minimumFractionDigits: casas,
+    maximumFractionDigits: casas,
+  });
+}
+
+function classeProcrastinacao(nivel) {
+  const classes = {
+    BAIXO: "is-low",
+    MODERADO: "is-moderate",
+    ALTO: "is-high",
+    CRITICO: "is-critical",
+    SEM_DADOS: "is-empty",
+  };
+
+  return classes[String(nivel || "SEM_DADOS").toUpperCase()] || "is-empty";
+}
  
   
  function statusVisual(status, canalPreferido) {
@@ -362,6 +409,18 @@ function statusEntregaVisual(interacao) {
    const [modalTarefa, setModalTarefa] = useState(false);
    const [formTarefa, setFormTarefa] = useState(tarefaVazia);
    const [modalAdiamento, setModalAdiamento] = useState(null);
+
+   const [ligacoes, setLigacoes] = useState([]);
+   const [resumoLigacoes, setResumoLigacoes] = useState({});
+   const [filtroLigacoes, setFiltroLigacoes] = useState("A_FAZER");
+   const [modalLigacao, setModalLigacao] = useState(false);
+   const [formLigacao, setFormLigacao] = useState(formLigacaoVazio);
+
+   const [modalAnalise, setModalAnalise] = useState(false);
+   const [analiseAtividade, setAnaliseAtividade] = useState(null);
+   const [diasAnalise, setDiasAnalise] = useState(30);
+   const [carregandoAnalise, setCarregandoAnalise] = useState(false);
+   const [erroAnalise, setErroAnalise] = useState("");
 
    const [modalAgendaLead, setModalAgendaLead] = useState(false);
 const [leadAgenda, setLeadAgenda] = useState(null);
@@ -676,6 +735,153 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
        if (!silencioso) setCarregando(false);
      }
    }, [buscaAgenda, chamarApi, filtroAgenda]);
+
+   const carregarLigacoes = useCallback(async ({ silencioso = false } = {}) => {
+     try {
+       if (!silencioso) setCarregando(true);
+       setErro("");
+
+       const retorno = await chamarApi("LIGACOES_LISTAR", {
+         filtro: filtroLigacoes,
+       });
+
+       setLigacoes(Array.isArray(retorno?.dados) ? retorno.dados : []);
+       setResumoLigacoes(retorno?.resumo || {});
+     } catch (e) {
+       if (!silencioso) {
+         setErro(e.message || "Erro ao consultar as ligações.");
+         setLigacoes([]);
+       }
+     } finally {
+       if (!silencioso) setCarregando(false);
+     }
+   }, [chamarApi, filtroLigacoes]);
+
+   const ligacoesAgrupadas = useMemo(() => {
+     const grupos = new Map();
+
+     ligacoes.forEach((ligacao) => {
+       const chave = String(ligacao.lead_id);
+       const grupoAtual = grupos.get(chave) || {
+         lead_id: ligacao.lead_id,
+         nome: ligacao.nome,
+         telefone: ligacao.telefone,
+         cidade: ligacao.cidade,
+         data_fila: ligacao.data_fila,
+         tentativas: {},
+       };
+
+       grupoAtual.tentativas[Number(ligacao.tentativa)] = ligacao;
+       grupos.set(chave, grupoAtual);
+     });
+
+     return Array.from(grupos.values()).sort((a, b) =>
+       String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR"),
+     );
+   }, [ligacoes]);
+
+   async function montarFilaLigacoes() {
+     try {
+       setExecutando("CRIAR_FILA_LIGACOES");
+       setErro("");
+
+       const retorno = await chamarApi("LIGACOES_CRIAR_FILA", {
+         data: dataLocalISO(),
+         limite: 12,
+       });
+
+       const adicionados = Number(retorno?.leads_adicionados || 0);
+       if (adicionados === 0) {
+         alert("Não existem novos telefones elegíveis para montar a fila.");
+       }
+
+       if (filtroLigacoes !== "A_FAZER") {
+         setFiltroLigacoes("A_FAZER");
+       } else {
+         await carregarLigacoes({ silencioso: true });
+       }
+     } catch (e) {
+       setErro(e.message || "Erro ao montar a lista de ligações.");
+     } finally {
+       setExecutando(null);
+     }
+   }
+
+   function abrirRegistroLigacao(ligacao) {
+     const pendente = ligacao.resultado === "PENDENTE";
+
+     setFormLigacao({
+       ligacao,
+       resultado: pendente ? "SEM_SUCESSO" : ligacao.resultado,
+       observacao: pendente
+         ? "Não atendeu"
+         : ligacao.observacao || "",
+       retornar_em: "",
+     });
+     setModalLigacao(true);
+   }
+
+   async function salvarResultadoLigacao() {
+     const ligacao = formLigacao.ligacao;
+     if (!ligacao?.id || ligacao.resultado !== "PENDENTE") return;
+
+     if (formLigacao.resultado === "RETORNAR" && !formLigacao.retornar_em) {
+       alert("Informe a data e o horário para retornar.");
+       return;
+     }
+
+     try {
+       setExecutando(`LIGACAO-${ligacao.id}`);
+       await chamarApi("LIGACOES_ATUALIZAR", {
+         ligacao_id: ligacao.id,
+         resultado: formLigacao.resultado,
+         observacao: formLigacao.observacao.trim(),
+         retornar_em:
+           formLigacao.resultado === "RETORNAR"
+             ? new Date(formLigacao.retornar_em).toISOString()
+             : null,
+       });
+
+       setModalLigacao(false);
+       setFormLigacao(formLigacaoVazio);
+       await carregarLigacoes({ silencioso: true });
+     } catch (e) {
+       alert(e.message || "Erro ao registrar o resultado da ligação.");
+     } finally {
+       setExecutando(null);
+     }
+   }
+
+   const carregarAnaliseAtividade = useCallback(
+     async (periodo = diasAnalise) => {
+       try {
+         setCarregandoAnalise(true);
+         setErroAnalise("");
+
+         const retorno = await chamarApi("ANALISE_ATIVIDADE", {
+           dias: Number(periodo),
+         });
+         const dados = retorno?.dados || retorno?.analise || retorno;
+
+         if (!dados?.resumo || !dados?.procrastinacao) {
+           throw new Error("A análise retornou em um formato inesperado.");
+         }
+
+         setAnaliseAtividade(dados);
+       } catch (e) {
+         setErroAnalise(e.message || "Erro ao carregar a análise de atividade.");
+         setAnaliseAtividade(null);
+       } finally {
+         setCarregandoAnalise(false);
+       }
+     },
+     [chamarApi, diasAnalise],
+   );
+
+   function abrirAnaliseAtividade() {
+     setModalAnalise(true);
+     carregarAnaliseAtividade(diasAnalise);
+   }
  
    useEffect(() => {
      if (aba === "LEADS") {
@@ -718,9 +924,28 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
        };
      }
 
+     if (aba === "LIGACOES") {
+       const primeiraCarga = window.setTimeout(() => carregarLigacoes(), 100);
+       const intervalo = window.setInterval(
+         () => carregarLigacoes({ silencioso: true }),
+         ATUALIZACAO_AUTOMATICA_MS,
+       );
+
+       return () => {
+         window.clearTimeout(primeiraCarga);
+         window.clearInterval(intervalo);
+       };
+     }
+
      carregarMensagens();
      return undefined;
-   }, [aba, carregarLeads, carregarMensagens, carregarTarefas]);
+   }, [
+     aba,
+     carregarLeads,
+     carregarLigacoes,
+     carregarMensagens,
+     carregarTarefas,
+   ]);
 
    useEffect(() => {
      if (!modalHistorico || !leadHistorico?.id) return undefined;
@@ -1707,6 +1932,15 @@ function abrirContatoDaAgenda(tarefa) {
              <div className="pf-header-actions">
 
               <button
+                type="button"
+                onClick={abrirAnaliseAtividade}
+                className="pf-analysis-button"
+              >
+                <span aria-hidden="true">▥</span>
+                Análise de atividade
+              </button>
+
+              <button
                     type="button"
                     onClick={gerarQrCodeWhatsApp}
                     disabled={carregandoQr}
@@ -1786,6 +2020,19 @@ function abrirContatoDaAgenda(tarefa) {
                  <strong className="pf-tab-count">{resumoAgenda.hoje}</strong>
                )}
              </button>
+             <button
+               type="button"
+               onClick={() => setAba("LIGACOES")}
+               className={`pf-tab ${aba === "LIGACOES" ? "is-active" : ""}`}
+             >
+               <span>☎</span>
+               Ligações
+               {Number(resumoLigacoes.a_fazer || 0) > 0 && (
+                 <strong className="pf-tab-count">
+                   {resumoLigacoes.a_fazer}
+                 </strong>
+               )}
+             </button>
            </div>
  
            {erro && <div className="pf-error">{erro}</div>}
@@ -1829,8 +2076,9 @@ function abrirContatoDaAgenda(tarefa) {
               aria-label="Filtrar por etapa comercial"
             >
               <option value="TODAS">Todas as etapas</option>
-              <option value="NOVO">Novo</option>
-              <option value="CONTATADO">Contatado</option>
+               <option value="NOVO">Novo</option>
+              <option value="CONTATADO">Em contato</option>
+              <option value="ENCAMINHADO">Encaminhado</option>
               <option value="QUALIFICADO">Qualificado</option>
               <option value="REUNIAO">Reunião</option>
               <option value="PROPOSTA">Proposta</option>
@@ -2337,12 +2585,15 @@ function abrirContatoDaAgenda(tarefa) {
                                 aria-label="Etapa comercial"
                                 title="Alterar etapa comercial"
                               >
-                                <option value="NOVO">● Novo</option>
-                                <option value="CONTATADO">● Contatado</option>
-                                <option value="QUALIFICADO">● Qualificado</option>
-                                <option value="REUNIAO">● Reunião</option>
-                                <option value="PROPOSTA">● Proposta</option>
-                                <option value="NEGOCIACAO">● Negociação</option>
+                               <option value="NOVO">● Novo</option>
+                          <option value="CONTATADO">● Em contato</option>
+                          <option value="ENCAMINHADO">● Encaminhado</option>
+                          <option value="QUALIFICADO">● Qualificado</option>
+                          <option value="REUNIAO">● Reunião</option>
+                          <option value="PROPOSTA">● Proposta</option>
+                          <option value="NEGOCIACAO">● Negociação</option>
+                          <option value="GANHO">● Ganho</option>
+                          <option value="PERDIDO">● Perdido</option>
                               </select>
 
                              </div>
@@ -2716,6 +2967,136 @@ function abrirContatoDaAgenda(tarefa) {
                  </div>
                )}
              </section>
+           ) : aba === "LIGACOES" ? (
+             <section className="pf-calls-page">
+               <div className="pf-calls-header">
+                 <div>
+                   <h2>Controle de ligações</h2>
+                   <p>Doze empresas por rodada, com tentativas às 09h, 15h e 17h.</p>
+                 </div>
+                 <div className="pf-calls-header-actions">
+                   <button
+                     type="button"
+                     onClick={() => carregarLigacoes()}
+                     disabled={carregando}
+                   >
+                     ↻ Atualizar
+                   </button>
+                   <button
+                     type="button"
+                     className="is-primary"
+                     onClick={montarFilaLigacoes}
+                     disabled={executando === "CRIAR_FILA_LIGACOES"}
+                   >
+                     {executando === "CRIAR_FILA_LIGACOES"
+                       ? "Montando..."
+                       : "+ Montar lista com 12"}
+                   </button>
+                 </div>
+               </div>
+
+               <div className="pf-calls-toolbar">
+                 <div className="pf-calls-tabs">
+                   <button
+                     type="button"
+                     onClick={() => setFiltroLigacoes("A_FAZER")}
+                     className={filtroLigacoes === "A_FAZER" ? "is-active" : ""}
+                   >
+                     A fazer
+                     <strong>{Number(resumoLigacoes.a_fazer || 0)}</strong>
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => setFiltroLigacoes("HISTORICO")}
+                     className={filtroLigacoes === "HISTORICO" ? "is-active" : ""}
+                   >
+                     Histórico
+                     <strong>{Number(resumoLigacoes.historico || 0)}</strong>
+                   </button>
+                 </div>
+
+                 <div className="pf-calls-summary">
+                   <span>Pendentes <strong>{Number(resumoLigacoes.pendentes || 0)}</strong></span>
+                   <span>Atenderam <strong>{Number(resumoLigacoes.atenderam || 0)}</strong></span>
+                   <span>Sem sucesso <strong>{Number(resumoLigacoes.sem_sucesso || 0)}</strong></span>
+                 </div>
+               </div>
+
+               {carregando ? (
+                 <div className="pf-loading">Carregando ligações...</div>
+               ) : ligacoesAgrupadas.length === 0 ? (
+                 <div className="pf-agenda-empty">
+                   <span>☎</span>
+                   <strong>
+                     {filtroLigacoes === "A_FAZER"
+                       ? "Nenhuma ligação pendente"
+                       : "Nenhuma ligação no histórico"}
+                   </strong>
+                   <p>
+                     {filtroLigacoes === "A_FAZER"
+                       ? "Use o botão Montar lista com 12 para iniciar a rodada."
+                       : "As rodadas concluídas aparecerão aqui."}
+                   </p>
+                 </div>
+               ) : (
+                 <div className="pf-calls-table-wrap">
+                   <table className="pf-calls-table">
+                     <thead>
+                       <tr>
+                         <th>Empresa</th>
+                         <th>Telefone</th>
+                         <th>Ligação 1</th>
+                         <th>Ligação 2</th>
+                         <th>Ligação 3</th>
+                       </tr>
+                     </thead>
+                     <tbody>
+                       {ligacoesAgrupadas.map((grupo) => (
+                         <tr key={grupo.lead_id}>
+                           <td>
+                             <strong>{grupo.nome}</strong>
+                             <small>
+                               {grupo.cidade ? `${grupo.cidade} · ` : ""}
+                               {dataBR(grupo.data_fila)}
+                             </small>
+                           </td>
+                           <td>
+                             <a href={`tel:${String(grupo.telefone || "").replace(/\D/g, "")}`}>
+                               ☎ {grupo.telefone || "Sem telefone"}
+                             </a>
+                           </td>
+                           {[1, 2, 3].map((numeroTentativa) => {
+                             const ligacao = grupo.tentativas[numeroTentativa];
+                             if (!ligacao) return <td key={numeroTentativa}>—</td>;
+
+                             const visual =
+                               resultadosLigacao[ligacao.resultado] ||
+                               resultadosLigacao.PENDENTE;
+
+                             return (
+                               <td key={numeroTentativa}>
+                                 <button
+                                   type="button"
+                                   className={`pf-call-cell ${visual.classe}`}
+                                   onClick={() => abrirRegistroLigacao(ligacao)}
+                                   title={
+                                     ligacao.observacao ||
+                                     "Clique para registrar ou visualizar a ligação"
+                                   }
+                                 >
+                                   <small>{horaBR(ligacao.agendada_para)}</small>
+                                   <strong>{visual.nome}</strong>
+                                 </button>
+                               </td>
+                             );
+                           })}
+                         </tr>
+                       ))}
+                     </tbody>
+                   </table>
+                 </div>
+               )}
+             </section>
            ) : (
              <section className="pf-messages-page">
                <div className="pf-section-header">
@@ -2795,6 +3176,301 @@ function abrirContatoDaAgenda(tarefa) {
            )}
          </main>
        </div>
+
+       {modalAnalise && (
+         <div
+           className="pf-modal-overlay"
+           onMouseDown={(event) => {
+             if (event.target === event.currentTarget) setModalAnalise(false);
+           }}
+         >
+           <div className="pf-modal pf-analysis-modal">
+             <div className="pf-analysis-titlebar">
+               <div>
+                 <span className="pf-analysis-eyebrow">Desempenho comercial</span>
+                 <h2>Análise de atividade</h2>
+                 <p>
+                   Mensagens, tarefas e ligações realizadas, além das pendências vencidas.
+                 </p>
+               </div>
+
+               <div className="pf-analysis-title-actions">
+                 <label>
+                   <span>Período</span>
+                   <select
+                     value={diasAnalise}
+                     onChange={(event) => setDiasAnalise(Number(event.target.value))}
+                   >
+                     <option value={7}>7 dias</option>
+                     <option value={15}>15 dias</option>
+                     <option value={30}>30 dias</option>
+                     <option value={60}>60 dias</option>
+                     <option value={90}>90 dias</option>
+                   </select>
+                 </label>
+                 <button
+                   type="button"
+                   onClick={() => carregarAnaliseAtividade(diasAnalise)}
+                   disabled={carregandoAnalise}
+                   className="pf-analysis-refresh"
+                 >
+                   {carregandoAnalise ? "Carregando..." : "↻ Atualizar"}
+                 </button>
+                 <button
+                   type="button"
+                   onClick={() => setModalAnalise(false)}
+                   className="pf-analysis-close"
+                   aria-label="Fechar análise"
+                 >
+                   ✕
+                 </button>
+               </div>
+             </div>
+
+             <div className="pf-analysis-body">
+               {erroAnalise && <div className="pf-analysis-error">{erroAnalise}</div>}
+
+               {carregandoAnalise && !analiseAtividade ? (
+                 <div className="pf-analysis-loading">
+                   <span />
+                   Calculando sua atividade comercial...
+                 </div>
+               ) : analiseAtividade ? (
+                 <>
+                   <div className="pf-analysis-period">
+                     <span>
+                       {dataBR(analiseAtividade.periodo?.data_inicio)} até{" "}
+                       {dataBR(analiseAtividade.periodo?.data_final)}
+                     </span>
+                     <small>
+                       Envios manuais, tarefas concluídas e ligações realizadas; automações não entram.
+                     </small>
+                   </div>
+
+                   <div className="pf-analysis-summary-grid">
+                     <article className="pf-analysis-card is-blue">
+                       <span>Atividades</span>
+                       <strong>{numeroBR(analiseAtividade.resumo?.total_atividades)}</strong>
+                       <small>
+                         {numeroBR(analiseAtividade.resumo?.media_atividades_por_dia, 2)} por dia
+                       </small>
+                     </article>
+                     <article className="pf-analysis-card is-sky">
+                       <span>Mensagens enviadas</span>
+                       <strong>
+                         {numeroBR(analiseAtividade.resumo?.total_mensagens_enviadas)}
+                       </strong>
+                       <small>Envios manuais</small>
+                     </article>
+                     <article className="pf-analysis-card is-green">
+                       <span>Tarefas concluídas</span>
+                       <strong>
+                         {numeroBR(analiseAtividade.resumo?.total_tarefas_concluidas)}
+                       </strong>
+                       <small>Ações finalizadas</small>
+                     </article>
+                     <article className="pf-analysis-card is-cyan">
+                       <span>Ligações realizadas</span>
+                       <strong>
+                         {numeroBR(analiseAtividade.resumo?.total_ligacoes_realizadas)}
+                       </strong>
+                       <small>
+                         {numeroBR(analiseAtividade.resumo?.total_ligacoes_atendidas)} atenderam
+                       </small>
+                     </article>
+                     <article className="pf-analysis-card is-navy">
+                       <span>Leads trabalhados</span>
+                       <strong>
+                         {numeroBR(analiseAtividade.resumo?.total_leads_trabalhados)}
+                       </strong>
+                       <small>Leads diferentes</small>
+                     </article>
+                     <article className="pf-analysis-card is-amber">
+                       <span>Dias ativos</span>
+                       <strong>{numeroBR(analiseAtividade.resumo?.dias_com_atividade)}</strong>
+                       <small>
+                         {numeroBR(analiseAtividade.resumo?.dias_sem_atividade)} sem atividade
+                       </small>
+                     </article>
+                     <article className="pf-analysis-card is-slate">
+                       <span>Última atividade</span>
+                       <strong className="is-date">
+                         {dataBR(analiseAtividade.resumo?.ultima_atividade)}
+                       </strong>
+                       <small>
+                         {analiseAtividade.resumo?.dias_desde_ultima_atividade == null
+                           ? "Nenhuma no período"
+                           : `${numeroBR(
+                               analiseAtividade.resumo?.dias_desde_ultima_atividade,
+                             )} dia(s) atrás`}
+                       </small>
+                     </article>
+                   </div>
+
+                   <section className="pf-procrastination-panel">
+                     <div
+                       className={`pf-procrastination-score ${classeProcrastinacao(
+                         analiseAtividade.procrastinacao?.nivel,
+                       )}`}
+                     >
+                       <span>Índice de procrastinação</span>
+                       <strong>
+                         {numeroBR(analiseAtividade.procrastinacao?.indice, 1)}%
+                       </strong>
+                       <em>
+                         {String(
+                           analiseAtividade.procrastinacao?.nivel || "SEM_DADOS",
+                         ).replace("_", " ")}
+                       </em>
+                     </div>
+
+                     <div className="pf-procrastination-details">
+                       <div>
+                         <span>Tarefas vencidas</span>
+                         <strong>
+                           {numeroBR(
+                             analiseAtividade.procrastinacao?.tarefas_vencidas_periodo,
+                           )}
+                         </strong>
+                       </div>
+                       <div>
+                         <span>Ligações vencidas</span>
+                         <strong>
+                           {numeroBR(
+                             analiseAtividade.procrastinacao?.ligacoes_vencidas_total,
+                           )}
+                         </strong>
+                       </div>
+                       <div>
+                         <span>Ligações realizadas</span>
+                         <strong>
+                           {numeroBR(
+                             analiseAtividade.procrastinacao?.ligacoes_realizadas_periodo,
+                           )}
+                         </strong>
+                       </div>
+                       <div>
+                         <span>Pendências de hoje</span>
+                         <strong>
+                           {numeroBR(
+                             Number(analiseAtividade.procrastinacao?.tarefas_pendentes_hoje || 0) +
+                             Number(analiseAtividade.procrastinacao?.ligacoes_pendentes_hoje || 0),
+                           )}
+                         </strong>
+                       </div>
+                     </div>
+                   </section>
+
+                   <div className="pf-analysis-breakdowns is-three-columns">
+                     <section>
+                       <div className="pf-analysis-section-title">
+                         <h3>Mensagens por canal</h3>
+                       </div>
+                       <div className="pf-analysis-chip-list">
+                         {(analiseAtividade.mensagens_por_canal || []).length > 0 ? (
+                           analiseAtividade.mensagens_por_canal.map((item) => (
+                             <div key={item.canal}>
+                               <span>{item.canal}</span>
+                               <strong>{numeroBR(item.quantidade)}</strong>
+                             </div>
+                           ))
+                         ) : (
+                           <small>Nenhuma mensagem enviada no período.</small>
+                         )}
+                       </div>
+                     </section>
+
+                     <section>
+                       <div className="pf-analysis-section-title">
+                         <h3>Tarefas concluídas por tipo</h3>
+                       </div>
+                       <div className="pf-analysis-chip-list">
+                         {(analiseAtividade.tarefas_por_tipo || []).length > 0 ? (
+                           analiseAtividade.tarefas_por_tipo.map((item) => (
+                             <div key={item.tipo}>
+                               <span>{nomesTarefa[item.tipo] || item.tipo}</span>
+                               <strong>{numeroBR(item.quantidade)}</strong>
+                             </div>
+                           ))
+                         ) : (
+                           <small>Nenhuma tarefa concluída no período.</small>
+                         )}
+                       </div>
+                     </section>
+
+                     <section>
+                       <div className="pf-analysis-section-title">
+                         <h3>Ligações por resultado</h3>
+                       </div>
+                       <div className="pf-analysis-chip-list">
+                         {(analiseAtividade.ligacoes_por_resultado || []).length > 0 ? (
+                           analiseAtividade.ligacoes_por_resultado.map((item) => (
+                             <div key={item.resultado}>
+                               <span>
+                                 {item.resultado === "ATENDEU"
+                                   ? "Atendeu"
+                                   : item.resultado === "SEM_SUCESSO"
+                                     ? "Sem sucesso"
+                                     : "Retornar"}
+                               </span>
+                               <strong>{numeroBR(item.quantidade)}</strong>
+                             </div>
+                           ))
+                         ) : (
+                           <small>Nenhuma ligação realizada no período.</small>
+                         )}
+                       </div>
+                     </section>
+                   </div>
+
+                   <section className="pf-analysis-daily">
+                     <div className="pf-analysis-section-title">
+                       <div>
+                         <h3>Atividade por dia</h3>
+                         <p>
+                           Ligação só conta quando houver resultado registrado.
+                         </p>
+                       </div>
+                     </div>
+
+                     <div className="pf-analysis-table-wrap">
+                       <table>
+                         <thead>
+                           <tr>
+                             <th>Data</th>
+                             <th>Mensagens</th>
+                             <th>Tarefas</th>
+                             <th>Ligações</th>
+                             <th>Leads</th>
+                             <th>Total</th>
+                           </tr>
+                         </thead>
+                         <tbody>
+                           {(analiseAtividade.por_dia || []).map((dia) => (
+                             <tr
+                               key={dia.data}
+                               className={Number(dia.total_atividades) === 0 ? "is-zero" : ""}
+                             >
+                               <td>{dataBR(dia.data)}</td>
+                               <td>{numeroBR(dia.mensagens_enviadas)}</td>
+                               <td>{numeroBR(dia.tarefas_concluidas)}</td>
+                               <td>{numeroBR(dia.ligacoes_realizadas)}</td>
+                               <td>{numeroBR(dia.leads_trabalhados)}</td>
+                               <td>
+                                 <strong>{numeroBR(dia.total_atividades)}</strong>
+                               </td>
+                             </tr>
+                           ))}
+                         </tbody>
+                       </table>
+                     </div>
+                   </section>
+                 </>
+               ) : null}
+             </div>
+           </div>
+         </div>
+       )}
  
        {modalTarefa && formTarefa.lead && (
          <div className="pf-modal-overlay">
@@ -3935,6 +4611,136 @@ function abrirContatoDaAgenda(tarefa) {
            </div>
          </div>
        )}
+
+       {modalLigacao && formLigacao.ligacao && (
+         <div
+           className="pf-modal-overlay"
+           onMouseDown={() => setModalLigacao(false)}
+         >
+           <div
+             className="pf-modal pf-modal-sm"
+             onMouseDown={(evento) => evento.stopPropagation()}
+           >
+             <div className="pf-modal-titlebar pf-call-modal-titlebar">
+               <div>
+                 <h2>Ligação {formLigacao.ligacao.tentativa}</h2>
+                 <p>
+                   {formLigacao.ligacao.nome} · {formLigacao.ligacao.telefone}
+                 </p>
+               </div>
+               <button type="button" onClick={() => setModalLigacao(false)}>
+                 ✕
+               </button>
+             </div>
+
+             <div className="pf-modal-body pf-task-form">
+               <div className="pf-call-scheduled-info">
+                 <span>Horário programado</span>
+                 <strong>{dataHoraBR(formLigacao.ligacao.agendada_para)}</strong>
+               </div>
+
+               {formLigacao.ligacao.resultado === "PENDENTE" ? (
+                 <>
+                   <label>
+                     <span>Resultado</span>
+                     <select
+                       value={formLigacao.resultado}
+                       onChange={(event) => {
+                         const resultado = event.target.value;
+                         setFormLigacao((atual) => ({
+                           ...atual,
+                           resultado,
+                           observacao:
+                             resultado === "SEM_SUCESSO"
+                               ? atual.observacao || "Não atendeu"
+                               : atual.observacao === "Não atendeu"
+                                 ? ""
+                                 : atual.observacao,
+                         }));
+                       }}
+                     >
+                       <option value="ATENDEU">Sim — atendeu</option>
+                       <option value="SEM_SUCESSO">Negativo — sem sucesso</option>
+                       <option value="RETORNAR">Retornar em outro horário</option>
+                       <option value="CANCELADA">Cancelar tentativa</option>
+                     </select>
+                   </label>
+
+                   {formLigacao.resultado === "RETORNAR" && (
+                     <label>
+                       <span>Quando devo retornar?</span>
+                       <input
+                         type="datetime-local"
+                         value={formLigacao.retornar_em}
+                         onChange={(event) =>
+                           setFormLigacao((atual) => ({
+                             ...atual,
+                             retornar_em: event.target.value,
+                           }))
+                         }
+                       />
+                     </label>
+                   )}
+
+                   <label>
+                     <span>Observação — o que aconteceu ou foi falado?</span>
+                     <textarea
+                       rows={4}
+                       value={formLigacao.observacao}
+                       onChange={(event) =>
+                         setFormLigacao((atual) => ({
+                           ...atual,
+                           observacao: event.target.value,
+                         }))
+                       }
+                       placeholder="Ex.: Maria atendeu e pediu para falar com João depois das 16h."
+                     />
+                   </label>
+                 </>
+               ) : (
+                 <div className="pf-call-readonly">
+                   <span
+                     className={`pf-call-result-badge ${
+                       (resultadosLigacao[formLigacao.ligacao.resultado] || {})
+                         .classe || ""
+                     }`}
+                   >
+                     {(resultadosLigacao[formLigacao.ligacao.resultado] || {})
+                       .nome || formLigacao.ligacao.resultado}
+                   </span>
+                   <div>
+                     <small>O que foi registrado</small>
+                     <p>{formLigacao.ligacao.observacao || "Sem observação."}</p>
+                   </div>
+                   {formLigacao.ligacao.realizada_em && (
+                     <small>
+                       Registrada em {dataHoraBR(formLigacao.ligacao.realizada_em)}
+                     </small>
+                   )}
+                 </div>
+               )}
+             </div>
+
+             <div className="pf-modal-footer">
+               <button type="button" onClick={() => setModalLigacao(false)}>
+                 Fechar
+               </button>
+               {formLigacao.ligacao.resultado === "PENDENTE" && (
+                 <button
+                   type="button"
+                   className="pf-primary-button"
+                   onClick={salvarResultadoLigacao}
+                   disabled={executando === `LIGACAO-${formLigacao.ligacao.id}`}
+                 >
+                   {executando === `LIGACAO-${formLigacao.ligacao.id}`
+                     ? "Salvando..."
+                     : "Salvar resultado"}
+                 </button>
+               )}
+             </div>
+           </div>
+         </div>
+       )}
  
        <style>{`
          #prospectflow-page, #prospectflow-page * { box-sizing: border-box; }
@@ -3944,7 +4750,7 @@ function abrirContatoDaAgenda(tarefa) {
          #prospectflow-page button:disabled { cursor: not-allowed; opacity: .55; }
  
          .pf-page {
-           min-height: 100%; padding: 24px 22px 48px; background: #f5f7fa;
+           min-height: 100%; padding: 8px 22px 48px; background: #f5f7fa;
            color: #0f172a; font-family: Inter, ui-sans-serif, system-ui, -apple-system,
            BlinkMacSystemFont, "Segoe UI", sans-serif;
          }
@@ -3979,6 +4785,12 @@ function abrirContatoDaAgenda(tarefa) {
            font-size: 12px; font-weight: 800; box-shadow: 0 2px 6px rgba(15,23,42,.04);
          }
          .pf-import-button:hover { border-color: #60a5fa; background: #eff6ff; color: #1d4ed8; }
+         .pf-analysis-button {
+           display: inline-flex; align-items: center; gap: 7px; border: 1px solid #6d5ce7;
+           border-radius: 9px; padding: 10px 14px; background: #6d5ce7; color: #fff;
+           font-size: 12px; font-weight: 800; box-shadow: 0 4px 12px rgba(109,92,231,.2);
+         }
+         .pf-analysis-button:hover { background: #5848d5; transform: translateY(-1px); }
  
          .pf-main { display: flex; flex-direction: column; gap: 14px; }
          .pf-tabs {
@@ -4372,6 +5184,51 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-task-form input, .pf-task-form select, .pf-task-form textarea { width: 100%; border: 1px solid #cbd5da; border-radius: 8px; padding: 9px 10px; background: #fff; color: #111b21; font-size: 11px; outline: none; }
          .pf-task-form input:focus, .pf-task-form select:focus, .pf-task-form textarea:focus { border-color: #00a884; box-shadow: 0 0 0 3px rgba(0,168,132,.12); }
 
+         .pf-calls-page { overflow: hidden; border: 1px solid #dbe2ea; border-radius: 10px; background: #fff; }
+         .pf-calls-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid #e3e8eb; }
+         .pf-calls-header h2 { margin: 0; color: #111b21; font-size: 16px; font-weight: 900; }
+         .pf-calls-header p { margin: 3px 0 0; color: #667781; font-size: 11px; }
+         .pf-calls-header-actions { display: flex; gap: 7px; }
+         .pf-calls-header-actions button { border: 1px solid #cbd5da; border-radius: 7px; padding: 8px 10px; background: #fff; color: #54656f; font-size: 10px; font-weight: 900; }
+         .pf-calls-header-actions button.is-primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+         .pf-calls-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #e3e8eb; background: #f0f2f5; }
+         .pf-calls-tabs, .pf-calls-summary { display: flex; flex-wrap: wrap; gap: 6px; }
+         .pf-calls-tabs button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; padding: 6px 9px; background: #e1e7ea; color: #3b4a54; font-size: 10px; font-weight: 800; }
+         .pf-calls-tabs button.is-active { background: #2563eb; color: #fff; }
+         .pf-calls-tabs strong { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 999px; background: rgba(255,255,255,.8); color: #315b86; font-size: 8px; }
+         .pf-calls-summary span { border-radius: 999px; padding: 5px 8px; background: #fff; color: #667781; font-size: 9px; font-weight: 800; }
+         .pf-calls-summary strong { margin-left: 3px; color: #111b21; }
+         .pf-calls-table-wrap { overflow-x: auto; padding: 12px; }
+         .pf-calls-table { width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid #dbe2ea; border-radius: 9px; }
+         .pf-calls-table th { padding: 9px 10px; background: #0f172a; color: #fff; font-size: 10px; font-weight: 900; text-align: left; }
+         .pf-calls-table th:nth-child(n+3) { text-align: center; }
+         .pf-calls-table td { border-top: 1px solid #e5e7eb; padding: 8px 10px; color: #334155; font-size: 10px; vertical-align: middle; }
+         .pf-calls-table tbody tr:nth-child(even) td { background: #f8fafc; }
+         .pf-calls-table td:first-child strong { display: block; color: #0f172a; font-size: 11px; }
+         .pf-calls-table td:first-child small { display: block; margin-top: 2px; color: #94a3b8; font-size: 8px; }
+         .pf-calls-table td:nth-child(2) a { color: #2563eb; font-weight: 800; text-decoration: none; white-space: nowrap; }
+         .pf-calls-table td:nth-child(n+3) { width: 130px; text-align: center; }
+         .pf-call-cell { display: inline-grid; min-width: 92px; gap: 2px; border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; }
+         .pf-call-cell small { font-size: 8px; font-weight: 800; opacity: .75; }
+         .pf-call-cell strong { font-size: 10px; font-weight: 900; }
+         .pf-call-cell.is-pending { border-color: #cbd5e1; background: #f1f5f9; color: #475569; }
+         .pf-call-cell.is-success { border-color: #86efac; background: #dcfce7; color: #166534; }
+         .pf-call-cell.is-negative { border-color: #fdba74; background: #fff7ed; color: #c2410c; }
+         .pf-call-cell.is-return { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; }
+         .pf-call-cell.is-cancelled { border-color: #e2e8f0; background: #f8fafc; color: #94a3b8; }
+         .pf-call-modal-titlebar { border-bottom-color: #1d4ed8 !important; background: #2563eb !important; color: #fff !important; }
+         .pf-call-modal-titlebar h2, .pf-call-modal-titlebar p { color: #fff !important; }
+         .pf-call-scheduled-info { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 8px; padding: 9px 10px; background: #eff6ff; color: #315b86; font-size: 10px; }
+         .pf-call-readonly { display: grid; gap: 12px; }
+         .pf-call-result-badge { justify-self: start; border-radius: 999px; padding: 6px 10px; font-size: 10px; font-weight: 900; }
+         .pf-call-result-badge.is-success { background: #dcfce7; color: #166534; }
+         .pf-call-result-badge.is-negative { background: #fff7ed; color: #c2410c; }
+         .pf-call-result-badge.is-return { background: #eff6ff; color: #1d4ed8; }
+         .pf-call-result-badge.is-cancelled { background: #f1f5f9; color: #64748b; }
+         .pf-call-readonly div { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #f8fafc; }
+         .pf-call-readonly small { color: #94a3b8; font-size: 9px; font-weight: 800; }
+         .pf-call-readonly p { margin: 5px 0 0; color: #334155; font-size: 11px; white-space: pre-wrap; }
+
          .pf-messages-page { overflow: hidden; border: 1px solid #dbe2ea; border-radius: 10px; background: #fff; }
          .pf-section-header { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 15px; border-bottom: 1px solid #e2e8f0; }
          .pf-section-header h2 { margin: 0; font-size: 15px; font-weight: 900; }
@@ -4387,6 +5244,72 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-cadence-card span:first-child { border-radius: 999px; padding: 4px 7px; background: #0f172a; color: #fff; }
          .pf-cadence-card p { margin: 9px 0 0; color: #64748b; font-size: 12px; line-height: 1.55; }
  
+         .pf-analysis-modal { max-width: 1180px; overflow: hidden; }
+         .pf-analysis-titlebar {
+           display: flex; align-items: center; justify-content: space-between; gap: 20px;
+           padding: 17px 20px; background: linear-gradient(135deg,#0f172a,#1d4ed8); color: #fff;
+         }
+         .pf-analysis-eyebrow { display: block; margin-bottom: 3px; color: #93c5fd; font-size: 9px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase; }
+         .pf-analysis-titlebar h2 { margin: 0; font-size: 19px; font-weight: 900; }
+         .pf-analysis-titlebar p { margin: 4px 0 0; color: #dbeafe; font-size: 11px; }
+         .pf-analysis-title-actions { display: flex; align-items: flex-end; gap: 8px; }
+         .pf-analysis-title-actions label { display: grid; gap: 3px; color: #dbeafe; font-size: 9px; font-weight: 900; }
+         .pf-analysis-title-actions select { min-width: 100px; border: 1px solid rgba(255,255,255,.25); border-radius: 7px; padding: 7px 9px; background: rgba(255,255,255,.12); color: #fff; font-size: 11px; font-weight: 800; color-scheme: dark; }
+         .pf-analysis-title-actions button { min-height: 31px; border: 1px solid rgba(255,255,255,.2); border-radius: 7px; padding: 7px 10px; background: rgba(255,255,255,.1); color: #fff; font-size: 11px; font-weight: 900; }
+         .pf-analysis-title-actions .pf-analysis-refresh { background: #2563eb; }
+         .pf-analysis-title-actions .pf-analysis-close { padding-inline: 9px; }
+         .pf-analysis-body { max-height: calc(92vh - 78px); overflow-y: auto; padding: 17px; background: #f5f7fb; }
+         .pf-analysis-error { margin-bottom: 12px; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; background: #fef2f2; color: #b91c1c; font-size: 11px; font-weight: 800; }
+         .pf-analysis-loading { display: flex; min-height: 260px; align-items: center; justify-content: center; gap: 9px; color: #64748b; font-size: 12px; font-weight: 800; }
+         .pf-analysis-loading span { width: 18px; height: 18px; border: 2px solid #bfdbfe; border-top-color: #2563eb; border-radius: 50%; animation: pf-spin .75s linear infinite; }
+         @keyframes pf-spin { to { transform: rotate(360deg); } }
+         .pf-analysis-period { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+         .pf-analysis-period span { color: #334155; font-size: 11px; font-weight: 900; }
+         .pf-analysis-period small { color: #64748b; font-size: 9px; font-weight: 700; }
+         .pf-analysis-summary-grid { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 9px; }
+         .pf-analysis-card { position: relative; overflow: hidden; min-height: 104px; border: 1px solid #dce3ed; border-top: 3px solid #64748b; border-radius: 9px; padding: 12px; background: #fff; box-shadow: 0 2px 7px rgba(15,23,42,.04); }
+         .pf-analysis-card > span { display: block; min-height: 27px; color: #64748b; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; }
+         .pf-analysis-card > strong { display: block; color: #0f172a; font-size: 25px; line-height: 1.1; font-weight: 900; }
+         .pf-analysis-card > strong.is-date { font-size: 18px; }
+         .pf-analysis-card > small { display: block; margin-top: 6px; color: #94a3b8; font-size: 9px; font-weight: 700; }
+         .pf-analysis-card.is-blue { border-top-color: #2563eb; } .pf-analysis-card.is-sky { border-top-color: #0ea5e9; }
+         .pf-analysis-card.is-green { border-top-color: #10b981; } .pf-analysis-card.is-navy { border-top-color: #1e3a8a; }
+         .pf-analysis-card.is-cyan { border-top-color: #0891b2; }
+         .pf-analysis-card.is-red { border-top-color: #ef4444; }
+         .pf-analysis-card.is-amber { border-top-color: #f59e0b; } .pf-analysis-card.is-slate { border-top-color: #64748b; }
+         .pf-procrastination-panel { display: grid; grid-template-columns: 230px minmax(0,1fr); gap: 10px; margin-top: 11px; }
+         .pf-procrastination-score { display: grid; align-content: center; border: 1px solid #dbe2ea; border-left: 5px solid #64748b; border-radius: 9px; padding: 13px 16px; background: #fff; }
+         .pf-procrastination-score > span { color: #64748b; font-size: 9px; font-weight: 900; text-transform: uppercase; }
+         .pf-procrastination-score > strong { margin-top: 2px; color: #0f172a; font-size: 27px; line-height: 1; font-weight: 900; }
+         .pf-procrastination-score > em { width: fit-content; margin-top: 7px; border-radius: 999px; padding: 3px 7px; background: #e2e8f0; color: #475569; font-size: 8px; font-style: normal; font-weight: 900; }
+         .pf-procrastination-score.is-low { border-left-color: #10b981; } .pf-procrastination-score.is-low > em { background: #d1fae5; color: #047857; }
+         .pf-procrastination-score.is-moderate { border-left-color: #f59e0b; } .pf-procrastination-score.is-moderate > em { background: #fef3c7; color: #b45309; }
+         .pf-procrastination-score.is-high { border-left-color: #f97316; } .pf-procrastination-score.is-high > em { background: #ffedd5; color: #c2410c; }
+         .pf-procrastination-score.is-critical { border-left-color: #ef4444; } .pf-procrastination-score.is-critical > em { background: #fee2e2; color: #b91c1c; }
+         .pf-procrastination-details { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; }
+         .pf-procrastination-details > div { display: grid; align-content: center; border: 1px solid #dbe2ea; border-radius: 9px; padding: 11px; background: #fff; }
+         .pf-procrastination-details span { min-height: 26px; color: #64748b; font-size: 9px; font-weight: 800; }
+         .pf-procrastination-details strong { color: #0f172a; font-size: 21px; font-weight: 900; }
+         .pf-analysis-breakdowns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 11px; }
+         .pf-analysis-breakdowns.is-three-columns { grid-template-columns: repeat(3,minmax(0,1fr)); }
+         .pf-analysis-breakdowns > section, .pf-analysis-daily { border: 1px solid #dbe2ea; border-radius: 9px; background: #fff; }
+         .pf-analysis-section-title { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border-bottom: 1px solid #e8edf3; }
+         .pf-analysis-section-title h3 { margin: 0; color: #1e293b; font-size: 11px; font-weight: 900; }
+         .pf-analysis-section-title p { margin: 3px 0 0; color: #94a3b8; font-size: 9px; }
+         .pf-analysis-chip-list { display: flex; min-height: 55px; flex-wrap: wrap; align-content: flex-start; gap: 7px; padding: 11px 13px; }
+         .pf-analysis-chip-list > div { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 5px 8px; background: #eff6ff; color: #1d4ed8; font-size: 9px; font-weight: 800; }
+         .pf-analysis-chip-list strong { display: inline-grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; background: #fff; color: #1e3a8a; }
+         .pf-analysis-chip-list small { color: #94a3b8; font-size: 9px; }
+         .pf-analysis-daily { margin-top: 11px; overflow: hidden; }
+         .pf-analysis-table-wrap { max-height: 300px; overflow: auto; }
+         .pf-analysis-table-wrap table { width: 100%; border-collapse: collapse; }
+         .pf-analysis-table-wrap th { position: sticky; top: 0; z-index: 1; padding: 8px 11px; background: #eef2f7; color: #64748b; font-size: 9px; text-align: right; text-transform: uppercase; }
+         .pf-analysis-table-wrap th:first-child, .pf-analysis-table-wrap td:first-child { text-align: left; }
+         .pf-analysis-table-wrap td { border-top: 1px solid #edf1f5; padding: 7px 11px; color: #475569; font-size: 10px; font-weight: 700; text-align: right; }
+         .pf-analysis-table-wrap tbody tr:nth-child(even) { background: #f8fafc; }
+         .pf-analysis-table-wrap tbody tr.is-zero td { color: #b6c0cc; }
+         .pf-analysis-table-wrap td strong { color: #1d4ed8; }
+
          .pf-modal-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(2,6,23,.62); backdrop-filter: blur(3px); }
          .pf-modal { width: 100%; max-height: 92vh; overflow: auto; border: 1px solid rgba(255,255,255,.4); border-radius: 13px; background: #fff; box-shadow: 0 25px 70px rgba(2,6,23,.32); }
          .pf-modal-sm { max-width: 540px; } .pf-modal-md { max-width: 680px; } .pf-modal-lg { max-width: 780px; }
@@ -4816,6 +5739,24 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-page.is-dark .pf-task-form input,
          .pf-page.is-dark .pf-task-form select,
          .pf-page.is-dark .pf-task-form textarea { border-color: #3b4a54; background: #202c33; color: #e9edef; color-scheme: dark; }
+         .pf-page.is-dark .pf-calls-page { border-color: #2a3942; background: #0b141a; }
+         .pf-page.is-dark .pf-calls-header { border-bottom-color: #2a3942; background: #111b21; }
+         .pf-page.is-dark .pf-calls-header h2 { color: #e9edef; }
+         .pf-page.is-dark .pf-calls-header p { color: #8696a0; }
+         .pf-page.is-dark .pf-calls-header-actions button { border-color: #3b4a54; background: #202c33; color: #d1d7db; }
+         .pf-page.is-dark .pf-calls-header-actions button.is-primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+         .pf-page.is-dark .pf-calls-toolbar { border-bottom-color: #2a3942; background: #202c33; }
+         .pf-page.is-dark .pf-calls-tabs button { background: #2a3942; color: #d1d7db; }
+         .pf-page.is-dark .pf-calls-tabs button.is-active { background: #2563eb; color: #fff; }
+         .pf-page.is-dark .pf-calls-summary span { background: #2a3942; color: #aebac1; }
+         .pf-page.is-dark .pf-calls-summary strong { color: #e9edef; }
+         .pf-page.is-dark .pf-calls-table { border-color: #2a3942; }
+         .pf-page.is-dark .pf-calls-table td { border-top-color: #2a3942; background: #111b21; color: #d1d7db; }
+         .pf-page.is-dark .pf-calls-table tbody tr:nth-child(even) td { background: #182229; }
+         .pf-page.is-dark .pf-calls-table td:first-child strong { color: #e9edef; }
+         .pf-page.is-dark .pf-call-readonly div { border-color: #3b4a54; background: #202c33; }
+         .pf-page.is-dark .pf-call-readonly p { color: #e9edef; }
+         .pf-page.is-dark .pf-call-scheduled-info { background: #182b43; color: #bfdbfe; }
          .pf-page.is-dark .pf-messages-page,
          .pf-page.is-dark .pf-cadence-card,
          .pf-page.is-dark .pf-empty-state { border-color: #2a3942; background: #111b21; color: #e9edef; }
@@ -4846,7 +5787,7 @@ function abrirContatoDaAgenda(tarefa) {
            .pf-lead-actions > div { display: flex; }
          }
          @media (max-width: 760px) {
-           .pf-page { padding: 15px 11px 35px; }
+           .pf-page { padding: 8px 11px 35px; }
            .pf-header > div:last-child { align-items: flex-start; }
            .pf-header > div:last-child > div > div:first-child { display: none; }
            .pf-header h1 { font-size: 22px; }
@@ -4881,6 +5822,10 @@ function abrirContatoDaAgenda(tarefa) {
            .pf-conversation-compose-row { display: flex; }
            .pf-agenda-toolbar { align-items: stretch; flex-direction: column; }
            .pf-agenda-toolbar > input { width: 100%; }
+           .pf-calls-header, .pf-calls-toolbar { align-items: stretch; flex-direction: column; }
+           .pf-calls-header-actions { width: 100%; }
+           .pf-calls-header-actions button { flex: 1; }
+           .pf-calls-summary { justify-content: flex-start; }
            .pf-task-card { grid-template-columns: auto minmax(0,1fr); }
            .pf-task-actions { grid-column: 1 / -1; justify-content: flex-start; max-width: none; }
          }
@@ -5338,6 +6283,115 @@ function abrirContatoDaAgenda(tarefa) {
 
 .pf-page.is-dark .pf-import-rules p {
   color: #aebac1 !important;
+}
+
+/* ---------- Análise de atividade ---------- */
+
+.pf-page.is-dark .pf-analysis-body {
+  background: #111b21;
+}
+
+.pf-page.is-dark .pf-analysis-period span,
+.pf-page.is-dark .pf-analysis-card > strong,
+.pf-page.is-dark .pf-procrastination-score > strong,
+.pf-page.is-dark .pf-procrastination-details strong,
+.pf-page.is-dark .pf-analysis-section-title h3 {
+  color: #e9edef;
+}
+
+.pf-page.is-dark .pf-analysis-period small,
+.pf-page.is-dark .pf-analysis-card > span,
+.pf-page.is-dark .pf-analysis-card > small,
+.pf-page.is-dark .pf-procrastination-score > span,
+.pf-page.is-dark .pf-procrastination-details span,
+.pf-page.is-dark .pf-analysis-section-title p {
+  color: #aebac1;
+}
+
+.pf-page.is-dark .pf-analysis-card,
+.pf-page.is-dark .pf-procrastination-score,
+.pf-page.is-dark .pf-procrastination-details > div,
+.pf-page.is-dark .pf-analysis-breakdowns > section,
+.pf-page.is-dark .pf-analysis-daily {
+  border-color: #3b4a54;
+  background: #202c33;
+}
+
+.pf-page.is-dark .pf-analysis-section-title,
+.pf-page.is-dark .pf-analysis-table-wrap td {
+  border-color: #2a3942;
+}
+
+.pf-page.is-dark .pf-analysis-table-wrap th {
+  background: #182229;
+  color: #aebac1;
+}
+
+.pf-page.is-dark .pf-analysis-table-wrap td {
+  color: #d1d7db;
+}
+
+.pf-page.is-dark .pf-analysis-table-wrap tbody tr:nth-child(even) {
+  background: #182229;
+}
+
+.pf-page.is-dark .pf-analysis-chip-list > div {
+  background: #263a52;
+  color: #bfdbfe;
+}
+
+.pf-page.is-dark .pf-analysis-chip-list strong {
+  background: #172554;
+  color: #dbeafe;
+}
+
+@media (max-width: 1050px) {
+  .pf-analysis-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .pf-procrastination-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .pf-analysis-breakdowns.is-three-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .pf-analysis-titlebar,
+  .pf-analysis-title-actions,
+  .pf-analysis-period {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pf-analysis-title-actions {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+  }
+
+  .pf-analysis-summary-grid,
+  .pf-procrastination-details,
+  .pf-analysis-breakdowns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pf-analysis-breakdowns {
+    grid-template-columns: 1fr;
+  }
+
+  .pf-analysis-breakdowns.is-three-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 460px) {
+  .pf-analysis-summary-grid,
+  .pf-procrastination-details {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pf-updating-line {
