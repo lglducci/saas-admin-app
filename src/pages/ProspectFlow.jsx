@@ -1,4 +1,4 @@
-             import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+                 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  import { buildWebhookUrl } from "../config/globals";
  
  /*
@@ -116,9 +116,7 @@ const EMPRESA_PROSPECTFLOW_ID = Number(
 
 // Polling leve para manter a central atualizada sem recarregar ou piscar a tela.
 const ATUALIZACAO_AUTOMATICA_MS = 100*60_000;
-// A conversa precisa atualizar mais rápido que o restante da tela.
-// A consulta é silenciosa e não causa o efeito de recarregar/piscar.
-const ATUALIZACAO_CONVERSA_MS = 10_000;
+// O historico carrega ao abrir a conversa e pode ser atualizado manualmente.
  
  function normalizarResposta(valor) {
    let atual = valor;
@@ -367,6 +365,8 @@ function statusEntregaVisual(interacao) {
    const [aba, setAba] = useState("LEADS");
    const [filtro, setFiltro] = useState("NOVO");
    const [etapaFiltro, setEtapaFiltro] = useState("TODAS");
+   const [segmentoFiltro, setSegmentoFiltro] = useState("");
+   const [cidadeFiltro, setCidadeFiltro] = useState("");
    const [busca, setBusca] = useState("");
    const [leads, setLeads] = useState([]);
    const [resumo, setResumo] = useState({});
@@ -807,6 +807,38 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
      }
    }
 
+   async function incluirLeadNasLigacoes(lead) {
+     if (!lead?.id) return;
+
+     const chaveExecucao = `CRIAR_LIGACOES_LEAD-${lead.id}`;
+
+     try {
+       setExecutando(chaveExecucao);
+       setErro("");
+
+       const retorno = await chamarApi("LIGACOES_CRIAR_PARA_LEAD", {
+         lead_id: lead.id,
+         data: dataLocalISO(),
+       });
+
+       const criadas = Number(retorno?.ligacoes_criadas || 0);
+
+       if (criadas === 0) {
+         alert("Este lead já possui uma cadeia de ligações.");
+         return;
+       }
+
+       await carregarLigacoes({ silencioso: true });
+       alert(`${criadas} ligações criadas para este lead.`);
+     } catch (e) {
+       const mensagem = e.message || "Erro ao incluir o lead nas ligações.";
+       setErro(mensagem);
+       alert(mensagem);
+     } finally {
+       setExecutando(null);
+     }
+   }
+
    function abrirRegistroLigacao(ligacao) {
      const pendente = ligacao.resultado === "PENDENTE";
 
@@ -1007,12 +1039,30 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
   [resumo, filtro, leads.length]
 );
 
+   const segmentosDisponiveis = useMemo(
+     () => [...new Set([...leads.map((lead) => lead.segmento?.trim()), segmentoFiltro].filter(Boolean))]
+       .sort((a, b) => a.localeCompare(b, "pt-BR")),
+     [leads, segmentoFiltro],
+   );
+   const cidadesDisponiveis = useMemo(
+     () => [...new Set([...leads.map((lead) => lead.cidade?.trim()), cidadeFiltro].filter(Boolean))]
+       .sort((a, b) => a.localeCompare(b, "pt-BR")),
+     [leads, cidadeFiltro],
+   );
+   const leadsVisiveis = useMemo(
+     () => leads.filter((lead) =>
+       (!segmentoFiltro || lead.segmento?.trim() === segmentoFiltro) &&
+       (!cidadeFiltro || lead.cidade?.trim() === cidadeFiltro)
+     ),
+     [leads, segmentoFiltro, cidadeFiltro],
+   );
+
    const leadSelecionado = useMemo(
      () =>
-       leads.find((lead) => String(lead.id) === String(leadSelecionadoId)) ??
-       leads[0] ??
+       leadsVisiveis.find((lead) => String(lead.id) === String(leadSelecionadoId)) ??
+       leadsVisiveis[0] ??
        null,
-     [leadSelecionadoId, leads],
+     [leadSelecionadoId, leadsVisiveis],
    );
 
    const atualizarTela = useCallback(async () => {
@@ -1034,19 +1084,19 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
    }, [carregarLeads, chamarApi, leadSelecionado?.id, modoPainel]);
 
    useEffect(() => {
-     if (leads.length === 0) {
+     if (leadsVisiveis.length === 0) {
        setLeadSelecionadoId(null);
        return;
      }
 
-     const selecionadoAindaExiste = leads.some(
+     const selecionadoAindaExiste = leadsVisiveis.some(
        (lead) => String(lead.id) === String(leadSelecionadoId),
      );
 
      if (!selecionadoAindaExiste) {
-       setLeadSelecionadoId(leads[0].id);
+       setLeadSelecionadoId(leadsVisiveis[0].id);
      }
-   }, [leadSelecionadoId, leads]);
+   }, [leadSelecionadoId, leadsVisiveis]);
 
    useEffect(() => {
      if (modoPainel !== "CONVERSA" || !leadSelecionado?.id) {
@@ -1085,14 +1135,8 @@ const leadsRecebidos = Array.isArray(retorno?.dados)
 
      carregarConversa();
 
-     const intervalo = window.setInterval(
-       () => carregarConversa({ silencioso: true }),
-       ATUALIZACAO_CONVERSA_MS,
-     );
-
      return () => {
        cancelado = true;
-       window.clearInterval(intervalo);
      };
    }, [chamarApi, leadSelecionado?.id, modoPainel]);
  
@@ -2088,6 +2132,34 @@ function abrirContatoDaAgenda(tarefa) {
             </select>
           </label>
 
+          <label className="pf-commercial-stage-filter">
+            <span>Segmento</span>
+            <select
+              value={segmentoFiltro}
+              onChange={(event) => setSegmentoFiltro(event.target.value)}
+              aria-label="Filtrar por segmento"
+            >
+              <option value="">Todos os segmentos</option>
+              {segmentosDisponiveis.map((segmento) => (
+                <option key={segmento} value={segmento}>{segmento}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="pf-commercial-stage-filter">
+            <span>Cidade</span>
+            <select
+              value={cidadeFiltro}
+              onChange={(event) => setCidadeFiltro(event.target.value)}
+              aria-label="Filtrar por cidade"
+            >
+              <option value="">Todas as cidades</option>
+              {cidadesDisponiveis.map((cidade) => (
+                <option key={cidade} value={cidade}>{cidade}</option>
+              ))}
+            </select>
+          </label>
+
           <div className="relative flex-1">
             <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
               ⌕
@@ -2194,13 +2266,16 @@ function abrirContatoDaAgenda(tarefa) {
                      <div className="pf-prospect-sidebar-header">
                        <div>
                          <strong>Prospects</strong>
-                         <span>{leads.length} nesta fila</span>
+                         <span>{leadsVisiveis.length} nesta fila</span>
                        </div>
-                       <span className="pf-prospect-total">{leads.length}</span>
+                       <span className="pf-prospect-total">{leadsVisiveis.length}</span>
                      </div>
 
                      <div className="pf-prospect-list">
-                       {leads.map((lead) => {
+                       {leadsVisiveis.length === 0 && (
+                         <div className="pf-prospect-empty">Nenhum prospect para este segmento e cidade.</div>
+                       )}
+                       {leadsVisiveis.map((lead) => {
                          const [statusNome] = statusVisual(
                               lead.status,
                               lead.canal_preferido,
@@ -2241,10 +2316,11 @@ function abrirContatoDaAgenda(tarefa) {
                                    <small>{statusNome}</small>
                                  </span>
                                  <span className="pf-prospect-company">
-                                   {lead.empresa_nome ||
-                                     lead.segmento ||
-                                     lead.telefone ||
-                                     "Contato sem empresa"}
+                                   {[
+                                     lead.empresa_nome || lead.telefone || "Contato sem empresa",
+                                     lead.segmento,
+                                     lead.cidade,
+                                   ].filter(Boolean).join(" · ")}
                                  </span>
                                  <span className="pf-prospect-last-message">
                                    {ultimaMensagem}
@@ -2485,7 +2561,7 @@ function abrirContatoDaAgenda(tarefa) {
                        </section>
                      ) : (
                      <>
-                     {leads
+                     {leadsVisiveis
                        .filter(
                          (lead) =>
                            String(lead.id) === String(leadSelecionado?.id),
@@ -2735,6 +2811,34 @@ function abrirContatoDaAgenda(tarefa) {
                            </div>
  
                            <div className="pf-lead-actions">
+                             {!bloqueado &&
+                               !["CONVERTIDO", "ENCERRADO"].includes(
+                                 lead.status,
+                               ) && (
+                                 <button
+                                   type="button"
+                                   onClick={() => incluirLeadNasLigacoes(lead)}
+                                   disabled={
+                                     !String(lead.telefone || "").trim() ||
+                                     executando ===
+                                     `CRIAR_LIGACOES_LEAD-${lead.id}`
+                                   }
+                                   className="pf-action-call-chain"
+                                   title={
+                                     String(lead.telefone || "").trim()
+                                       ? "Criar três tentativas de ligação para este lead"
+                                       : "Cadastre um telefone antes de criar as ligações"
+                                   }
+                                 >
+                                   {!String(lead.telefone || "").trim()
+                                     ? "☎ Cadastre um telefone"
+                                     : executando ===
+                                   `CRIAR_LIGACOES_LEAD-${lead.id}`
+                                     ? "Incluindo..."
+                                     : "☎ Incluir nas ligações"}
+                                 </button>
+                               )}
+
                              {permiteCadencia && (
                                <>
                                  <button
@@ -3201,6 +3305,7 @@ function abrirContatoDaAgenda(tarefa) {
                      value={diasAnalise}
                      onChange={(event) => setDiasAnalise(Number(event.target.value))}
                    >
+                     <option value={3}>3 dias</option>
                      <option value={7}>7 dias</option>
                      <option value={15}>15 dias</option>
                      <option value={30}>30 dias</option>
@@ -4895,8 +5000,8 @@ function abrirContatoDaAgenda(tarefa) {
   background: #ffffff;
   color: #15803d;
 }
-         .pf-search-row { display: flex; width: min(530px, 100%);justify-self: start; align-items: center; gap: 8px; }
-         .pf-search-row > div { position: relative; flex: 1; }
+         .pf-search-row { display: flex; width: 100%; flex-wrap: wrap; justify-self: start; align-items: center; gap: 8px; }
+         .pf-search-row > div { position: relative; flex: 1 1 220px; }
          .pf-search-row > div > span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: #64748b; }
          .pf-search-input { width: 100%; height: 36px; border: 1px solid #d8e0ea; border-radius: 7px; padding: 0 11px 0 32px; background: #fff; color: #1e293b; font-size: 12px; outline: none; }
          .pf-search-input:focus { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.18); }
@@ -4913,6 +5018,7 @@ function abrirContatoDaAgenda(tarefa) {
            background: #ffffff;
            overflow: hidden;
          }
+         .pf-prospect-empty { padding: 18px 12px; color: #8696a0; font-size: 11px; text-align: center; }
          .pf-commercial-stage-filter > span {
            position: absolute;
            top: 4px;
@@ -5088,6 +5194,8 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-lead-actions .pf-action-close { color: #b45309; }
  
          .pf-tab-count { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 999px; background: #00a884; color: #fff; font-size: 9px; }
+         .pf-action-call-chain { border-color: #2563eb !important; background: #eff6ff !important; color: #1d4ed8 !important; }
+         .pf-action-call-chain:disabled { cursor: wait; opacity: .65; }
          .pf-action-schedule { border-color: #8adaca !important; background: #e9fbf6 !important; color: #00856a !important; }
          .pf-next-task { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 9px 10px; border: 1px solid #9ce1d3; border-radius: 9px; background: #effcf8; }
          .pf-next-task > div:first-child { display: grid; gap: 2px; min-width: 0; }
@@ -5254,7 +5362,8 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-analysis-titlebar p { margin: 4px 0 0; color: #dbeafe; font-size: 11px; }
          .pf-analysis-title-actions { display: flex; align-items: flex-end; gap: 8px; }
          .pf-analysis-title-actions label { display: grid; gap: 3px; color: #dbeafe; font-size: 9px; font-weight: 900; }
-         .pf-analysis-title-actions select { min-width: 100px; border: 1px solid rgba(255,255,255,.25); border-radius: 7px; padding: 7px 9px; background: rgba(255,255,255,.12); color: #fff; font-size: 11px; font-weight: 800; color-scheme: dark; }
+         .pf-analysis-title-actions select { min-width: 100px; border: 1px solid rgba(255,255,255,.25); border-radius: 7px; padding: 7px 9px; background: rgba(255,255,255,.12); color: #fff; font-size: 11px; font-weight: 800; color-scheme: light; }
+         .pf-analysis-title-actions select option { background: #fff; color: #0f172a; }
          .pf-analysis-title-actions button { min-height: 31px; border: 1px solid rgba(255,255,255,.2); border-radius: 7px; padding: 7px 10px; background: rgba(255,255,255,.1); color: #fff; font-size: 11px; font-weight: 900; }
          .pf-analysis-title-actions .pf-analysis-refresh { background: #2563eb; }
          .pf-analysis-title-actions .pf-analysis-close { padding-inline: 9px; }
@@ -5493,6 +5602,10 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-prospect-sidebar-header span:not(.pf-prospect-total) { color: var(--wa-muted); }
          .pf-prospect-total { background: var(--wa-green); color: #ffffff; }
          .pf-prospect-list { max-height: 650px; padding: 0; }
+         .pf-page.is-dark .pf-prospect-list {
+              scrollbar-color: #53636b #182229;
+              scrollbar-width: thin;
+            }
          .pf-prospect-item {
            min-height: 61px;
            grid-template-columns: 40px minmax(0,1fr);
@@ -5714,6 +5827,7 @@ function abrirContatoDaAgenda(tarefa) {
          .pf-page.is-dark .pf-lead-actions button { border-color: #3b4a54; background: #202c33; color: #d1d7db; }
          .pf-page.is-dark .pf-lead-actions > button:first-child,
          .pf-page.is-dark .pf-lead-actions .pf-action-reply { border-color: #00a884; background: #00a884; color: #fff; }
+         .pf-page.is-dark .pf-action-call-chain { border-color: #2563eb !important; background: #172554 !important; color: #93c5fd !important; }
          .pf-page.is-dark .pf-action-schedule { border-color: #087d69 !important; background: #163832 !important; color: #53d6ba !important; }
          .pf-page.is-dark .pf-next-task { border-color: #176b5c; background: #132f2b; }
          .pf-page.is-dark .pf-next-task strong { color: #e9edef; }
